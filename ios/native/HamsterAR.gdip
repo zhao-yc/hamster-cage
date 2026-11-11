@@ -1,0 +1,12 @@
+[config]
+name="HamsterAR"
+binary="HamsterAR.a"
+initialization="hamster_ar_init"
+deinitialization="hamster_ar_deinit"
+
+[dependencies]
+system=["UIKit.framework", "Foundation.framework", "AVFoundation.framework", "ARKit.framework", "RealityKit.framework", "QuartzCore.framework"]
+linker_flags=["-ObjC", "-L/usr/lib/swift", "-L$(TOOLCHAIN_DIR)/usr/lib/swift/iphoneos"]
+
+[plist]
+NSCameraUsageDescription:string="使用相机寻找桌面，让灰灰和白白出现在眼前。画面只用于实时取景。"

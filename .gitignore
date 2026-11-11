@@ -1,0 +1,14 @@
+.godot/
+/dist/
+/export_templates/
+.env
+.env.*
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.key
+*.mobileprovision
+/export_credentials.cfg
+/ios/plugins/*.a
+/ios/plugins/HamsterAR.gdip
