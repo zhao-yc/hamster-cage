@@ -5,6 +5,7 @@ const Art = preload("res://cage_art.gd")
 const Habitat = preload("res://habitat.gd")
 const Motion = preload("res://cage_motion.gd")
 const CarePlay = preload("res://care_play.gd")
+const Rhythm = preload("res://hamster_rhythm.gd")
 const DESIGN := Vector2(1024, 640)
 const ACTIONS := ["添粮", "加水", "换垫料"]
 const CARE_BUTTON_SIZE := Vector2(128, 52)
@@ -41,6 +42,7 @@ var wheel_speed := 0.0
 var clock_left := 0.0
 var clock_origin := 0
 var clock_ticks := 0
+var clock_offset := 0
 var save_left := 0.0
 var save_failed := false
 var parent_hold := -1.0
@@ -50,6 +52,9 @@ var care_play: Control
 var touches: Dictionary = {}
 var touch_consumed := false
 var held := -1
+var held_start := Vector2.ZERO
+var held_floor := Vector2.INF
+var held_target: Dictionary = {}
 var social_left := 0.0
 var social_cooldown := 35.0
 var social_kind := SocialKind.CHASE
@@ -59,6 +64,7 @@ var last_steps := [-1, -1]
 
 func _ready() -> void:
 	rng.randomize()
+	clock_offset = int(Time.get_time_zone_from_system().bias) * 60
 	var font := FontVariation.new()
 	font.base_font = load("res://assets/NotoSansSC.ttf")
 	font.variation_opentype = {TextServerManager.get_primary_interface().name_to_tag("wght"): 530}
@@ -110,8 +116,8 @@ func _ready() -> void:
 
 func _actor(x: float, delay: float) -> Dictionary:
 	return {"pos": Vector2(x, 1.3), "goal": Vector2(x, 1.3), "route": [],
-		"next": "嗅", "state": "嗅", "left": delay, "dir": 0.2, "phase": delay, "visits": 0,
-		"lift": 0.0, "poop_left": randf_range(45, 90), "velocity": Vector2.ZERO,
+		"next": "嗅", "state": "嗅", "left": delay, "dir": 0.2, "phase": delay,
+		"lift": 0.0, "awake_until": 0, "velocity": Vector2.ZERO,
 		"facing": 0.2, "turn_speed": 0.0, "gait": 0.0, "speed": 0.0}
 
 func _layout() -> void:
@@ -212,7 +218,11 @@ func _dialog_button(value: String, action: Callable) -> void:
 
 func _show_farewell() -> void:
 	memorial = farewells.pop_front()
-	_dialog("和%s说再见" % Care.NAMES[memorial], "%s已经离世了。我们把它的照片留在相册里。" % Care.NAMES[memorial])
+	var name: String = Care.NAMES[memorial]
+	var farewell := "%s已经离世了。" % name
+	if care.pets[memorial].get("death_cause") == "age":
+		farewell = "%s年纪大了，安静地离开了。" % name
+	_dialog("和%s说再见" % name, farewell + "我们把它的照片留在相册里。")
 	_portrait(memorial)
 	_dialog_button("回到笼子", _close_dialog)
 
@@ -307,7 +317,10 @@ func _care_action(index: int) -> void:
 	_end_social()
 	care_play = CarePlay.new()
 	add_child(care_play)
-	care_play.begin(index, ui_font)
+	care_play.begin(index, ui_font, {
+		"food": _food_fill(), "water": care.water_fill(),
+		"dirt": _bedding_dirt(), "droppings": care.droppings,
+	})
 	care_play.completed.connect(_finish_care)
 	care_play.cancelled.connect(_cancel_care)
 
@@ -345,7 +358,10 @@ func _wall() -> int:
 	return clock_origin + elapsed
 
 func _refresh() -> void:
+	var previous := care.now
 	var departed := care.settle(_wall())
+	if care.now - previous > 120:
+		habitat.sync_droppings(care.droppings)
 	if departed.is_empty():
 		return
 	farewells.append_array(departed)
@@ -369,6 +385,7 @@ func _notification(what: int) -> void:
 		_refresh()
 		_save()
 	elif what == NOTIFICATION_APPLICATION_RESUMED and is_instance_valid(modal):
+		clock_offset = int(Time.get_time_zone_from_system().bias) * 60
 		_refresh()
 		_layout()
 	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT and is_instance_valid(modal):
@@ -410,6 +427,9 @@ func _process(delta: float) -> void:
 			_show_parent()
 	notice_left -= delta
 	var frame_delta := minf(delta, 0.05)
+	for index in range(actors.size()):
+		actors[index].size_ratio = care.growth_scale(index)
+		actors[index].senior = care.senior(index)
 	var previous := [actors[0].pos, actors[1].pos]
 	_social(frame_delta)
 	for index in range(actors.size()):
@@ -421,14 +441,17 @@ func _process(delta: float) -> void:
 				if index == held:
 					Motion.face(actors[index], actors[index].facing, frame_delta)
 			actors[index].lift = move_toward(actors[index].lift, 1.25 if index == held else 0.0, frame_delta * 4.0)
-			_poop(index, frame_delta)
+			if index == held and actors[index].lift >= 1.1 and held_floor.is_finite():
+				actors[index].pos = held_floor
+			_poop(index)
 	var airborne := held if held >= 0 and actors[held].lift >= 1.1 else -1
 	Motion.separate(actors, [care.alive(0), care.alive(1)], airborne)
 	for index in range(actors.size()):
 		var distance: float = actors[index].pos.distance_to(previous[index]) if index != held else 0.0
 		actors[index].speed = distance / maxf(frame_delta, 0.001)
 		# 行走步态随真正走过的距离推进；停下或被挡住时不再原地高速踏步。
-		actors[index].gait += frame_delta * 14.0 if actors[index].state == "跑" else distance * TAU / ((1.73 if index == 0 else 1.52) * 0.42)
+		var stride_length: float = Habitat.ADULT_SIZE[index] * actors[index].size_ratio * 0.42
+		actors[index].gait += frame_delta * 14.0 if actors[index].state == "跑" else distance * TAU / stride_length
 		habitat.show_pet(index, actors[index], care.alive(index), frame_delta)
 		if care.alive(index) and actors[index].state in ["走", "嬉戏", "打架"] and index != held and actors[index].speed > 0.12:
 			var step := floori(actors[index].gait / PI)
@@ -444,20 +467,25 @@ func _process(delta: float) -> void:
 						paw = foot
 				if closest < 0.12:
 					habitat.nudge_bedding(paw.global_position, Vector2(sin(actors[index].dir), cos(actors[index].dir)))
+	habitat.show_grip(held, frame_delta)
+	habitat.update_light(Rhythm.is_night(care.now, clock_offset), frame_delta)
 	habitat.tick_bedding(frame_delta)
 	wheel_speed = move_toward(wheel_speed, 5.6 if wheel_owner >= 0 and actors[wheel_owner].state == "跑" else 0.0, delta * 5.0)
 	wheel_angle = fposmod(wheel_angle + wheel_speed * delta, TAU)
-	var dirt := clampf(float(care.now - care.bedding_at) / Care.BEDDING_TIME, 0, 1)
-	habitat.update_supplies(wheel_angle, _supply("food", Care.FOOD), _supply("water", Care.WATER), dirt)
+	habitat.update_supplies(wheel_angle, _food_fill(), care.water_fill(), _bedding_dirt())
 	stage.queue_redraw()
 
 func _move_actor(index: int, delta: float) -> void:
 	var actor := actors[index]
 	actor.phase += delta
+	if actor.lift > 0.0:
+		return
+	if actor.state == "喝" and care.water_remaining() <= 0:
+		actor.state = "嗅"
 	actor.left -= delta
 	if actor.state == "走":
 		var other_airborne: bool = held == 1 - index and actors[1 - index].lift >= 1.1
-		Motion.advance(actor, actors[1 - index].pos, care.alive(1 - index) and not other_airborne, index, delta)
+		Motion.advance(actor, actors[1 - index].pos, care.alive(1 - index) and not other_airborne, index, delta, Motion.spacing(actors))
 		if actor.pos.distance_to(actor.goal) > 0.008:
 			return
 		actor.pos = actor.goal
@@ -469,7 +497,20 @@ func _move_actor(index: int, delta: float) -> void:
 		if actor.state == "上轮":
 			_travel(actor, Habitat.WHEEL_RUN, "跑")
 			return
-		actor.left = rng.randf_range(3.0, 6.0) if actor.state in ["睡", "跑"] else rng.randf_range(0.8, 1.8)
+		if actor.state == "喝" and care.water_remaining() <= 0:
+			actor.state = "嗅"
+		actor.left = rng.randf_range(2.0, 5.0)
+		if actor.state in ["吃", "喝", "跑"]:
+			care.record_visit(index, actor.state)
+			_save()
+		if actor.state == "吃":
+			actor.left = rng.randf_range(12.0, 24.0)
+		elif actor.state == "喝":
+			actor.left = rng.randf_range(4.0, 9.0)
+		elif actor.state == "跑":
+			actor.left = rng.randf_range(35.0, 85.0) * lerpf(1.0, 0.55, actor.senior)
+		elif actor.state == "睡":
+			actor.left = rng.randf_range(18.0, 32.0)
 		if actor.state == "跑":
 			actor.facing = -PI / 2
 		elif actor.state == "吃":
@@ -485,29 +526,88 @@ func _move_actor(index: int, delta: float) -> void:
 		wheel_owner = -1
 		_travel(actor, Habitat.WHEEL_ENTRY, "嗅")
 		return
-	actor.visits += 1
-	var options := ["走走", "嗅", "睡", "吃", "喝", "跑"]
-	var task: String = "跑" if actor.visits % 4 == 0 else options[rng.randi_range(0, options.size() - 1)]
-	if task == "跑" and wheel_owner == -1:
-		wheel_owner = index
-		_travel(actor, Habitat.WHEEL_ENTRY, "上轮")
-	elif task == "睡":
-		_travel(actor, Habitat.CUBBIES[index], "睡")
-	elif task == "吃" and care.remaining(index, "food") > 0 and not _reserved(1 - index, "吃"):
-		_travel(actor, Habitat.BOWL + Vector2(1.22, 0), "吃")
-	elif task == "喝" and care.remaining(index, "water") > 0 and not _reserved(1 - index, "喝"):
-		_travel(actor, Habitat.DRINK, "喝")
-	else:
-		_travel(actor, Vector2(rng.randf_range(-3.35, 3.35), rng.randf_range(2.05, 3.65)), "嗅")
+	_choose_activity(index)
 
-func _travel(actor: Dictionary, goal: Vector2, next: String) -> void:
+func _choose_activity(index: int) -> void:
+	var actor := actors[index]
+	for task in ["喝", "吃", "跑"]:
+		var last_visit := care.last_visit(index, task)
+		var due := Rhythm.visit_due(task, care.now, clock_offset, index, last_visit)
+		if task != "跑":
+			var supplied_at := int(care.pets[index].food_at) if task == "吃" else care.water_until - Care.WATER_DURATION
+			# 闻到刚放进来的食水可能过来看一眼，也会跳过刚完成的同类动作。
+			due = due or (care.now - supplied_at < 150 and care.now - last_visit >= Rhythm.MIN_GAPS[task])
+		if due and _activity_problem(index, task, index).is_empty():
+			_start_activity(index, task, index)
+			return
+	var awake: bool = Rhythm.awake(care.now, clock_offset, index) or care.now < actor.awake_until
+	var nap_chance := lerpf(0.10, 0.30, actor.senior)
+	if not awake or (actor.state != "睡" and rng.randf() < nap_chance):
+		if actor.state == "睡":
+			# 窝里继续睡，定期查看下一次活动时段，避免反复进出门洞。
+			actor.left = rng.randf_range(18.0, 32.0)
+			return
+		for nest in [index, 1 - index]:
+			if _activity_problem(index, "睡", nest).is_empty():
+				_start_activity(index, "睡", nest)
+				return
+	_travel(actor, Vector2(rng.randf_range(-3.35, 3.35), rng.randf_range(2.05, 3.65)), "嗅")
+
+func _activity_problem(index: int, task: String, nest: int) -> String:
+	var other := 1 - index
+	match task:
+		"吃":
+			if care.remaining(index, "food") <= 0:
+				return "食盆没粮了，先添粮吧。"
+			if _reserved(other, "吃"):
+				return "食盆有人用，等一等吧。"
+		"喝":
+			if care.water_remaining() <= 0:
+				return "水壶没水了，先加水吧。"
+			if _reserved(other, "喝"):
+				return "水壶有人用，等一等吧。"
+		"睡":
+			if _reserved(other, "睡") and actors[other].get("nest", other) == nest:
+				return "这个小窝有人，试试另一个吧。"
+		"跑":
+			if wheel_owner >= 0 and wheel_owner != index:
+				return "滚轮有人用，等一等吧。"
+	return ""
+
+func _start_activity(index: int, task: String, nest: int) -> void:
+	var actor := actors[index]
+	var size_ratio := care.growth_scale(index)
+	match task:
+		"吃":
+			_travel(actor, Habitat.BOWL + Vector2(0.74 + 0.48 * size_ratio, 0), "吃")
+		"喝":
+			_travel(actor, Habitat.DRINK - Vector2(0, 0.46 * (1.0 - size_ratio)), "喝")
+		"睡":
+			var door: Vector2 = Habitat.CUBBIES[nest]
+			_travel(actor, door - Vector2(0, Habitat.NEST_DEPTH), "睡", door + Vector2(0, 0.42))
+			actor.nest = nest
+		"跑":
+			wheel_owner = index
+			_travel(actor, Habitat.WHEEL_ENTRY, "上轮")
+
+func _travel(actor: Dictionary, goal: Vector2, next: String, entrance: Vector2 = Vector2.INF) -> void:
 	actor.next = next
 	actor.state = "走"
 	actor.route.clear()
-	if next != "跑" and absf(actor.pos.x - goal.x) > 0.65:
+	var start: Vector2 = actor.pos
+	var old_nest: int = actor.get("nest", -1)
+	if old_nest >= 0:
+		var old_door: Vector2 = Habitat.CUBBIES[old_nest]
+		if start.y < old_door.y and absf(start.x - old_door.x) < 0.45:
+			# 从窝里出发时先走门洞，再走向其他设施。
+			start = old_door + Vector2(0, 0.42)
+			actor.route.append(start)
+	if next != "跑" and absf(start.x - goal.x) > 0.65:
 		# 横向穿过开阔过道，避免穿过小窝、食盆和滚轮。
 		var aisle := 2.12
-		actor.route.assign([Vector2(actor.pos.x, aisle), Vector2(goal.x, aisle)])
+		actor.route.append_array([Vector2(start.x, aisle), Vector2(goal.x, aisle)])
+	if entrance.is_finite():
+		actor.route.append(entrance)
 	actor.route.append(goal)
 	_set_goal(actor, actor.route.pop_front())
 
@@ -538,24 +638,35 @@ func _respond_at(point: Vector2) -> void:
 				actor.facing = 0.0
 				actor.velocity = Vector2.ZERO
 				actor.left = 1.5
-				_feedback("%s看到你啦！" % Care.NAMES[index], index)
+				actor.awake_until = care.now + 60
+				var greeting := "%s看到你啦！" % Care.NAMES[index]
+				if care.growth_scale(index) < 1.0:
+					greeting += "它已经 %d 日龄啦。" % care.age_days(index)
+				elif care.senior(index) > 0.0:
+					greeting += "它年纪大了，动作慢些。"
+				_feedback(greeting, index)
 			return
 
 func _reserved(index: int, task: String) -> bool:
 	return care.alive(index) and (actors[index].state == task or (actors[index].state == "走" and actors[index].next == task))
 
-func _poop(index: int, delta: float) -> void:
+func _poop(index: int) -> void:
 	var actor := actors[index]
-	if index == held or actor.state in ["睡", "跑", "嬉戏", "打架"] or actor.pos.y < 0.7:
+	if index == held or actor.lift > 0.0:
 		return
-	actor.poop_left -= delta
-	if actor.poop_left > 0:
+	var time := care.pending_waste(index)
+	if time < 0:
 		return
-	actor.poop_left = rng.randf_range(60, 110)
-	actor.state = "便便"
-	actor.left = 1.4
-	var behind: Vector2 = actor.pos - Vector2(sin(actor.dir), cos(actor.dir)) * 0.65
-	care.add_dropping(behind)
+	var sheltered: bool = actor.state == "睡"
+	var on_floor: bool = actor.pos.y >= 0.7 and (actor.state in ["嗅", "回应"] or (actor.state == "走" and actor.next == "嗅"))
+	if not sheltered and not on_floor:
+		return
+	var point := Rhythm.toilet_point(time, index)
+	if on_floor:
+		actor.state = "便便"
+		actor.left = 1.4
+		point = actor.pos - Vector2(sin(actor.dir), cos(actor.dir)) * (0.65 * actor.size_ratio)
+	care.leave_waste(index, time, point)
 	habitat.sync_droppings(care.droppings)
 	_save()
 
@@ -574,6 +685,8 @@ func _social(delta: float) -> void:
 	if held >= 0 or modal.visible or is_instance_valid(care_play) or ar_pending or not care.alive(0) or not care.alive(1):
 		_end_social()
 		return
+	var spacing := Motion.spacing(actors)
+	var pair_size := spacing / Motion.ADULT_SPACING
 	if social_left > 0:
 		if social_left <= delta:
 			_end_social()
@@ -586,11 +699,11 @@ func _social(delta: float) -> void:
 			return
 		social_left -= delta
 		if social_kind == SocialKind.FIGHT:
-			_fight(delta)
+			_fight(delta, pair_size)
 			return
 		for i in range(2):
 			var angle := social_angle + (CHASE_DURATION - social_left) * 1.1 + i * PI
-			var destination := social_center + Vector2(cos(angle), sin(angle)) * 0.94
+			var destination := social_center + Vector2(cos(angle), sin(angle)) * 0.94 * pair_size
 			var before: Vector2 = actors[i].pos
 			actors[i].pos = before.move_toward(destination, delta * 1.5)
 			var direction: Vector2 = actors[i].pos - before
@@ -604,9 +717,9 @@ func _social(delta: float) -> void:
 	if social_cooldown > 0:
 		return
 	for i in range(2):
-		if actors[i].state not in ["走", "嗅", "回应"] or actors[i].pos.y < 1.2 or care.remaining(i, "food") <= 0 or care.remaining(i, "water") <= 0:
+		if actors[i].state not in ["走", "嗅", "回应"] or actors[i].pos.y < 1.2 or care.remaining(i, "food") <= 0 or care.water_remaining() <= 0:
 			return
-	if actors[0].pos.distance_to(actors[1].pos) >= 2.4:
+	if actors[0].pos.distance_to(actors[1].pos) >= spacing + 0.73:
 		return
 	# 只在开阔地面打架，与追逐共用冷却时间，避免连续打架或挤进后排设施。
 	var fight_area := Rect2(-3.9, 2.0, 7.8, 1.8)
@@ -618,7 +731,7 @@ func _social(delta: float) -> void:
 	if social_kind == SocialKind.FIGHT:
 		social_left = FIGHT_DURATION
 		social_angle = (actors[0].pos - social_center).angle()
-		_fight(delta)
+		_fight(delta, pair_size)
 		_feedback(FIGHT_NOTICE, 2)
 		notice_left = FIGHT_DURATION
 	else:
@@ -627,7 +740,7 @@ func _social(delta: float) -> void:
 		social_angle = (actors[0].pos - social_center).angle()
 		_feedback("它们在玩追逐游戏，可以轻轻抱开哦。", 1)
 
-func _fight(delta: float) -> void:
+func _fight(delta: float, pair_size: float) -> void:
 	# 先转向对峙，再交替挥爪、后仰，最后各退一步。始终保留身体间距。
 	var elapsed := FIGHT_DURATION - social_left
 	var swing_time := maxf(elapsed - 1.15, 0.0)
@@ -639,7 +752,7 @@ func _fight(delta: float) -> void:
 		var swing := strength if i == beat % 2 else -strength
 		var outward := Vector2.from_angle(social_angle + i * PI)
 		var radius := 0.92 + retreat - swing * (0.22 if swing > 0 else 0.07)
-		var destination := social_center + outward * radius
+		var destination := social_center + outward * radius * pair_size
 		var before: Vector2 = actor.pos
 		actor.pos = before.move_toward(destination, delta * 1.3)
 		actor.velocity = (actor.pos - before) / maxf(delta, 0.001)
@@ -655,32 +768,55 @@ func _lift_at(point: Vector2) -> void:
 		if care.alive(index) and habitat.hit(index, point):
 			_end_social()
 			held = index
+			held_start = point
+			held_floor = Vector2.INF
+			held_target = {}
 			if wheel_owner == index:
 				wheel_owner = -1
 			actors[index].state = "抱起"
+			actors[index].facing = 0.38 if actors[index].pos.x < 0 else -0.38
 			actors[index].velocity = Vector2.ZERO
 			actors[index].route.clear()
 			_feedback("轻轻抱着%s，移动后松开放下。" % Care.NAMES[index], index)
 			return
 
 func _drag_held(point: Vector2) -> void:
-	if held >= 0 and actors[held].lift >= 1.1:
-		actors[held].pos = Motion.safe_floor(habitat.floor_point(point))
+	if held < 0 or (not held_floor.is_finite() and point.distance_to(held_start) < 8.0):
+		return
+	held_target = habitat.drop_target_at(point)
+	held_floor = held_target.landing if not held_target.is_empty() else Motion.safe_floor(habitat.floor_point(point))
 
-func _drop_held() -> void:
+func _drop_held(allow_activity: bool = true) -> void:
 	if held < 0:
 		return
 	var index := held
+	var actor := actors[index]
+	var target := held_target if allow_activity else {}
+	var landing: Vector2 = held_floor if allow_activity and held_floor.is_finite() else actor.pos
+	var at_entrance := not held_target.is_empty() and landing.is_equal_approx(held_floor)
 	held = -1
-	actors[index].pos = Motion.drop(actors[index].pos, actors[1-index].pos, care.alive(1-index))
-	actors[index].state = "回应"
-	actors[index].facing = 0.0
-	actors[index].velocity = Vector2.ZERO
-	actors[index].left = 2.0
+	held_floor = Vector2.INF
+	held_target = {}
+	actor.pos = Motion.drop(landing, actors[1-index].pos, care.alive(1-index), at_entrance, Motion.spacing(actors) + 0.08)
+	actor.state = "回应"
+	actor.facing = 0.0
+	actor.velocity = Vector2.ZERO
+	actor.left = 2.0
+	actor.awake_until = care.now + 60
+	notice_left = 0.0
 	social_cooldown = 100.0
+	if target.is_empty() or not care.alive(index):
+		return
+	var nest: int = target.get("nest", -1)
+	var problem := _activity_problem(index, target.task, nest)
+	if not problem.is_empty():
+		_feedback(problem, index)
+		return
+	_start_activity(index, target.task, nest)
+	_feedback("%s要去%s啦。" % [Care.NAMES[index], target.label], index)
 
 func _cancel_gestures() -> void:
-	_drop_held()
+	_drop_held(false)
 	touches.clear()
 	touch_consumed = false
 
@@ -699,8 +835,12 @@ func _input(event: InputEvent) -> void:
 						touch_consumed = held >= 0
 		else:
 			if held >= 0:
-				_drop_held()
-			elif touches.size() == 1 and not touch_consumed:
+				if not event.canceled and held_floor.is_finite() and touches.size() == 2 and touches.has(event.index):
+					touches[event.index] = event.position
+					var points := touches.values()
+					_drag_held((points[0] + points[1]) * 0.5)
+				_drop_held(not event.canceled)
+			elif touches.size() == 1 and not touch_consumed and not event.canceled:
 				_respond_at(event.position)
 			touches.erase(event.index)
 			if touches.is_empty():
@@ -718,6 +858,8 @@ func _input(event: InputEvent) -> void:
 		if event.pressed:
 			_lift_at(event.position)
 		else:
+			if held_floor.is_finite():
+				_drag_held(event.position)
 			_drop_held()
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and held >= 0 and touches.is_empty():
@@ -748,35 +890,54 @@ func _chime(index: int) -> void:
 
 func _needs() -> String:
 	var alerts: Array[String] = []
+	if care.alive(0) or care.alive(1):
+		if care.water_remaining() <= 0:
+			alerts.append("水壶没水了，先加水吧。")
+		elif care.water_fill() <= 0.25:
+			alerts.append("水壶里的水快喝完了。")
 	for index in range(2):
 		if not care.alive(index):
 			continue
-		var water := care.remaining(index, "water")
 		var food := care.remaining(index, "food")
-		if water <= 0 or food <= 0:
-			var need := "需要吃饭和喝水" if water <= 0 and food <= 0 else ("需要喝水" if water <= 0 else "饿了")
-			alerts.append(Care.NAMES[index] + need)
-		elif water <= Care.WATER[index] * 0.25 or food <= Care.FOOD[index] * 0.25:
-			alerts.append(Care.NAMES[index] + ("的水快喝完了" if water <= Care.WATER[index] * 0.25 else "的粮快吃完了"))
+		if food <= 0:
+			alerts.append(Care.NAMES[index] + "饿了")
+		elif food <= Care.FOOD[index] * 0.25:
+			alerts.append(Care.NAMES[index] + "的粮快吃完了")
 	if not alerts.is_empty():
 		return "　·　".join(alerts)
 	if care.now - care.bedding_at >= Care.BEDDING_TIME:
 		return "该换干净垫料啦。"
 	if tutorial < HINTS.size():
 		return HINTS[tutorial]
+	if not Rhythm.is_night(care.now, clock_offset):
+		var resting: Array[String] = []
+		for index in range(2):
+			if care.alive(index) and actors[index].state == "睡":
+				resting.append(Care.NAMES[index])
+		if not resting.is_empty():
+			return "和".join(resting) + "在小窝里休息。"
 	return "" if care.alive(0) or care.alive(1) else "可以在相册里看看它们。"
 
-func _supply(kind: String, capacities: Array) -> float:
+func _food_fill() -> float:
 	var amount := 0.0
 	var count := 0
 	for index in range(2):
 		if care.alive(index):
 			count += 1
-			amount += clampf(float(care.remaining(index, kind)) / capacities[index], 0, 1)
+			amount += clampf(float(care.remaining(index, "food")) / Care.FOOD[index], 0, 1)
 	return amount / maxf(1, count)
+
+func _bedding_dirt() -> float:
+	return clampf(float(care.now - care.bedding_at) / Care.BEDDING_TIME, 0.0, 1.0)
 
 func _draw_stage() -> void:
 	var caption := "存档暂时无法保存，请检查设备空间。" if save_failed else (notice if notice_left > 0 else _needs())
+	if held >= 0 and not save_failed:
+		if held_target.is_empty():
+			caption = "把%s移到设施旁，再松手。" % Care.NAMES[held]
+		else:
+			var problem := _activity_problem(held, held_target.task, held_target.get("nest", -1))
+			caption = problem if not problem.is_empty() else "松手让%s%s。" % [Care.NAMES[held], held_target.label]
 	if caption.is_empty():
 		return
 	var width := ui_font.get_string_size(caption, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x

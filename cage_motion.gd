@@ -1,6 +1,10 @@
 extends RefCounted
 
 const RADII := [0.88, 0.79]
+const ADULT_SPACING := 1.67
+
+static func spacing(actors: Array) -> float:
+	return RADII[0] * float(actors[0].get("size_ratio", 1.0)) + RADII[1] * float(actors[1].get("size_ratio", 1.0))
 
 static func safe_floor(point: Vector2) -> Vector2:
 	var p := point.clamp(Vector2(-4.6, 0.65), Vector2(4.6, 4.15))
@@ -12,9 +16,10 @@ static func safe_floor(point: Vector2) -> Vector2:
 		p = bowl + direction * 1.50
 	return p.clamp(Vector2(-4.6, 0.65), Vector2(4.6, 4.15))
 
-static func drop(point: Vector2, other: Vector2, other_alive: bool) -> Vector2:
-	var candidate := safe_floor(point)
-	if not other_alive or candidate.distance_to(other) >= 1.75:
+static func drop(point: Vector2, other: Vector2, other_alive: bool, at_entrance: bool = false, clearance: float = 1.75) -> Vector2:
+	# 设施入口有预设落点，空地才使用笼子前方的范围限制。
+	var candidate := point if at_entrance else safe_floor(point)
+	if not other_alive or candidate.distance_to(other) >= clearance:
 		return candidate
 	var best := Vector2(0, 3.2)
 	var distance := INF
@@ -22,7 +27,7 @@ static func drop(point: Vector2, other: Vector2, other_alive: bool) -> Vector2:
 	for row in range(15):
 		for col in range(31):
 			var p := safe_floor(Vector2(-4.5 + col * 0.3, 0.65 + row * 0.25))
-			if p.distance_to(other) < 1.75:
+			if p.distance_to(other) < clearance:
 				continue
 			if p.distance_squared_to(point) < distance:
 				distance = p.distance_squared_to(point)
@@ -40,7 +45,7 @@ static func face(actor: Dictionary, target: float, delta: float) -> void:
 		actor.turn_speed = 0.0
 	actor.dir = wrapf(float(actor.dir) + turn, -PI, PI)
 
-static func advance(actor: Dictionary, other: Vector2, avoid: bool, index: int, delta: float) -> void:
+static func advance(actor: Dictionary, other: Vector2, avoid: bool, index: int, delta: float, minimum: float = ADULT_SPACING) -> void:
 	var from: Vector2 = actor.pos
 	var distance := from.distance_to(actor.goal)
 	if distance < 0.008 and actor.velocity.length() < 0.14:
@@ -48,11 +53,12 @@ static func advance(actor: Dictionary, other: Vector2, avoid: bool, index: int, 
 		actor.velocity = Vector2.ZERO
 		return
 	var direction: Vector2 = (actor.goal - from).normalized()
-	if avoid and from.distance_to(other) < 2.8:
+	var avoidance_range := minimum + 1.13
+	if avoid and from.distance_to(other) < avoidance_range:
 		var away := from - other
 		if away.length_squared() < 0.01:
 			away = Vector2(-1 if index == 0 else 1, 0)
-		var proximity := 1.0 - smoothstep(1.72, 2.8, away.length())
+		var proximity := 1.0 - smoothstep(minimum + 0.05, avoidance_range, away.length())
 		var approaching := 1.0 - smoothstep(-0.8, 0.5, direction.dot(away.normalized()))
 		var weight := proximity * approaching
 		var tangent := Vector2(-away.y, away.x).normalized()
@@ -61,7 +67,8 @@ static func advance(actor: Dictionary, other: Vector2, avoid: bool, index: int, 
 	actor.facing = atan2(direction.x, direction.y)
 	face(actor, actor.facing, delta)
 	var alignment := Vector2(sin(actor.dir), cos(actor.dir)).dot(direction)
-	var speed := minf(1.2, distance * 5.0) * smoothstep(-0.2, 0.9, alignment)
+	var pace := sqrt(float(actor.get("size_ratio", 1.0))) * lerpf(1.0, 0.70, float(actor.get("senior", 0.0)))
+	var speed := minf(1.2 * pace, distance * 5.0) * smoothstep(-0.2, 0.9, alignment)
 	actor.velocity = actor.velocity.move_toward(direction * speed, delta * 3.0)
 	var movement: Vector2 = actor.velocity * delta
 	if movement.length() > distance and movement.normalized().dot((actor.goal - from).normalized()) > 0.98:
@@ -74,7 +81,7 @@ static func separate(actors: Array, alive: Array, held: int) -> void:
 		return
 	var offset: Vector2 = actors[1].pos - actors[0].pos
 	var distance := offset.length()
-	var minimum: float = RADII[0] + RADII[1]
+	var minimum := spacing(actors)
 	if distance >= minimum:
 		return
 	var direction := offset / distance if distance > 0.001 else Vector2.RIGHT

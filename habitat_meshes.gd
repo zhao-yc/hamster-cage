@@ -41,6 +41,32 @@ static func lathe(profile: Array[Vector2], segments: int = 80) -> ArrayMesh:
 	surface.generate_normals()
 	return surface.commit()
 
+static func finger(tip: Vector3, first_control: Vector3, second_control: Vector3, radius: float) -> ArrayMesh:
+	# 以指根为旋转轴，截面沿三维曲线弯向指尖。
+	var profile := PackedVector2Array([
+		Vector2(0, 0), Vector2(0.38, 0.009), Vector2(0.62, 0.024), Vector2(0.80, 0.045),
+		Vector2(0.92, 0.073), Vector2(0.99, 0.11), Vector2(1, 0.17), Vector2(0.98, 0.24),
+		Vector2(0.95, 0.30), Vector2(0.94, 0.36), Vector2(0.98, 0.42), Vector2(1.03, 0.48),
+		Vector2(1.01, 0.54), Vector2(0.97, 0.61), Vector2(0.95, 0.68), Vector2(0.96, 0.76),
+		Vector2(0.98, 0.84), Vector2(0.95, 0.91), Vector2(0.84, 0.955), Vector2(0.57, 0.989),
+		Vector2(0, 1)])
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var sides := 32
+	for i in range(sides):
+		for row in range(profile.size() - 1):
+			for corner in [Vector2i(0, 0), Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 0), Vector2i(1, 1), Vector2i(0, 1)]:
+				var angle := TAU * float((i + corner.x) % sides) / sides
+				var ring := profile[row + corner.y]
+				var center := tip.bezier_interpolate(first_control, second_control, Vector3.ZERO, ring.y)
+				var axis := tip.bezier_derivative(first_control, second_control, Vector3.ZERO, ring.y).normalized()
+				var across := axis.cross(Vector3.BACK).normalized()
+				var depth := across.cross(axis)
+				surface.set_uv(Vector2(float(i + corner.x) / sides, ring.y))
+				surface.add_vertex(center + (across * cos(angle) + depth * sin(angle) * 0.84) * ring.x * radius)
+	surface.generate_normals()
+	return surface.commit()
+
 # 凸轮廓挤出并倒圆前后边缘，避免木屋屋顶像两块拼接的薄板。
 static func roof() -> ArrayMesh:
 	var corners := PackedVector2Array([Vector2(-0.78, 0.94), Vector2(0.78, 0.94), Vector2(0, 1.46)])

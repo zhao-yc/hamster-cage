@@ -7,8 +7,28 @@ const WHEEL_ENTRY := Vector2(3.12, -0.48)
 const BOWL := Vector2(-2.90, 0.75)
 const DRINK := Vector2(0.62, -2.44)
 const CUBBIES := [Vector2(-3.70, -1.51), Vector2(-1.39, -1.70)]
+const NEST_DEPTH := 1.17
+const ADULT_SIZE := [1.73, 1.52]
+const BODY_CENTER := Vector3(0, 0.315, -0.115)
+const BODY_RADII := Vector3(0.31, 0.305, 0.41)
+const WATER_BOTTOM := 1.01
+const WATER_HEIGHT := 0.74
+const DROP_TARGETS := [
+	{"area": AABB(Vector3(-3.93, 0, -0.23), Vector3(2.37, 0.68, 2.22)),
+		"task": "吃", "label": "吃粮", "landing": BOWL + Vector2(1.32, 0.90)},
+	{"area": AABB(Vector3(0.03, 0, -3.62), Vector3(1.17, 2.85, 2.35)),
+		"task": "喝", "label": "喝水", "landing": DRINK + Vector2(0, 1.55)},
+	{"area": AABB(Vector3(-4.83, 0, -3.02), Vector3(2.22, 2.50, 2.32)),
+		"task": "睡", "label": "进小窝", "nest": 0, "landing": CUBBIES[0] + Vector2(0, 0.68)},
+	{"area": AABB(Vector3(-2.48, 0, -3.18), Vector3(2.19, 2.50, 2.37)),
+		"task": "睡", "label": "进小窝", "nest": 1, "landing": CUBBIES[1] + Vector2(0, 0.68)},
+	{"area": AABB(Vector3(1.58, 0, -2.64), Vector3(3.10, 3.23, 3.04)),
+		"task": "跑", "label": "跑滚轮", "landing": WHEEL_ENTRY + Vector2(0, 1.1)},
+]
 
 var camera: Camera3D
+var sun: DirectionalLight3D
+var night_mix := -1.0
 var wheel: Node3D
 var pets: Array[Node3D] = []
 var heads: Array[Node3D] = []
@@ -19,8 +39,14 @@ var ears: Array[Array] = []
 var whiskers: Array[Array] = []
 var limbs: Array[Array] = []
 var poses: Array[Dictionary] = []
+var grip: Node3D
+var grip_pivot: Node3D
+var grip_fingers: Array[Node3D] = []
+var grip_owner := -1
+var grip_progress := 0.0
 var grounds: Array[ShaderMaterial] = []
 var water: Node3D
+var water_column: MeshInstance3D
 var seeds: Node3D
 var seed_parts: Array[Node3D] = []
 var dirt := -1.0
@@ -56,7 +82,7 @@ func _ready() -> void:
 	var world := WorldEnvironment.new()
 	world.environment = env
 	add_child(world)
-	var sun := DirectionalLight3D.new()
+	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -29, 0)
 	sun.light_color = Color("#fff0d6")
 	sun.light_energy = 0.67
@@ -80,6 +106,7 @@ func _ready() -> void:
 	_supplies()
 	for index in range(2):
 		_pet(index)
+	_make_grip()
 	chip_cloud = MultiMeshInstance3D.new()
 	chip_cloud.multimesh = MultiMesh.new()
 	chip_cloud.multimesh.transform_format = MultiMesh.TRANSFORM_3D
@@ -337,6 +364,7 @@ func _supplies() -> void:
 	var cap := _material(Color("#a9b79b"), 0.34)
 	var glass := _material(Color("#e9e8dc28"), 0.10)
 	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.render_priority = 1
 	var metal := _material(Color("#b5b6ae"), 0.18)
 	metal.metallic = 0.80
 	for side in [-1.0, 1.0]:
@@ -345,14 +373,17 @@ func _supplies() -> void:
 			_box(Vector3(side * 0.29, height, -0.122), Vector3(0.035, 0.007, 0.004), ceramic, bottle)
 	var bottle_shape: Array[Vector2] = [Vector2(0.15, 0.87), Vector2(0.22, 0.94), Vector2(0.235, 1.04), Vector2(0.235, 1.72), Vector2(0.22, 1.80), Vector2(0.15, 1.83)]
 	_mesh(Meshes.lathe(bottle_shape), Vector3.ZERO, glass, bottle).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var water_material := _material(Color("#c1d8d344"), 0.12)
+	var water_material := _material(Color("#79b5c4a8"), 0.16)
 	water_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water_material.render_priority = -1
-	water = _cylinder(Vector3(0, 1.30, 0), 0.19, 0.70, water_material, bottle)
-	water.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_ring(Vector3(0, 0.35, 0), 0.180, 0.194, glass, water, false)
+	water = _node(Vector3(0, WATER_BOTTOM + WATER_HEIGHT, 0), bottle)
+	water_column = _cylinder(Vector3(0, -WATER_HEIGHT * 0.5, 0), 0.20, WATER_HEIGHT, water_material, water)
+	water_column.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var surface := _material(Color("#a5d6dcdb"), 0.19)
+	surface.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_ring(Vector3.ZERO, 0.183, 0.205, surface, water, false)
 	for index in range(9):
-		_ellipsoid(Vector3(sin(index * 2.4) * 0.12, -0.27 + index * 0.063, 0.15), Vector3.ONE * (0.008 + (index % 3) * 0.004), glass, water).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_ellipsoid(Vector3(sin(index * 2.4) * 0.12, -0.27 + index * 0.063, 0.15), Vector3.ONE * (0.008 + (index % 3) * 0.004), glass, water_column).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var highlight := _material(Color("#fff9e96c"))
 	highlight.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_box(Vector3(-0.14, 1.40, 0.171), Vector3(0.018, 0.66, 0.005), highlight, bottle).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -372,15 +403,14 @@ func _supplies() -> void:
 func _pet(index: int) -> void:
 	var root := _node(Vector3.ZERO, self)
 	pets.append(root)
-	poses.append({"ready": false, "ground": 0.0, "stride": 0.0, "sleep": 0.0, "fight": 0.0,
+	poses.append({"ready": false, "ground": 0.0, "stride": 0.0, "sleep": 0.0, "fight": 0.0, "held": 0.0,
 		"head_y": 0.325, "head_pitch": 0.0, "crouch": 0.0})
 	_contact(Vector3(0, 0.065, -0.06), Vector2(1.5, 1.7), root)
 	var ear_fur := _material(Color("#a49682") if index == 0 else Color("#d7cabc"))
 	var pink := _material(Color("#bd9687"), 0.57)
 	var eyes := _material(Color("#100d0b"), 0.055)
 	var shine := _material(Color("#fff6df"), 0.12)
-	var body_radii := Vector3(0.31, 0.305, 0.41)
-	_furred_part(Vector3(0, 0.315, -0.115), body_radii, 6500, index, false, root)
+	_furred_part(BODY_CENTER, BODY_RADII, 6500, index, false, root)
 	var head := _node(Vector3(0, 0.325, 0.235), root)
 	heads.append(head)
 	var head_radii := Vector3(0.245, 0.225, 0.245)
@@ -443,6 +473,47 @@ func _pet(index: int) -> void:
 	for side in [-1.0, 1.0]:
 		_ellipsoid(Vector3(side * 0.012, -0.035, 0.271), Vector3(0.003, 0.002, 0.0015), mouth, head)
 
+func _make_grip() -> void:
+	grip = _node(Vector3.ZERO, self)
+	grip.visible = false
+	grip_pivot = _node(Vector3.ZERO, grip)
+	var skin := ShaderMaterial.new()
+	skin.shader = preload("res://assets/finger_skin.gdshader")
+	skin.set_shader_parameter("skin_tint", Color("#d5a38c"))
+	skin.set_shader_parameter("nail_tint", Color("#e2b6a9"))
+	for side in [-1.0, 1.0]:
+		var thumb: bool = side < 0.0
+		# 指尖落在肩侧的毛发里，控制点往外弯，给圆弧形指腹留出空间。
+		var direction := Vector3(side, 0.16, 0.30).normalized()
+		var tip := BODY_CENTER + Hamster.point(direction, BODY_RADII, false) + Vector3(side * 0.016, 0, 0)
+		var base := Vector3(side * (0.46 if thumb else 0.435), 0.72 if thumb else 0.79, -0.08 if thumb else -0.12)
+		var finger := _node(base, grip_pivot)
+		var curve := Meshes.finger(tip - base, tip - base + Vector3(side * 0.096, 0.035, 0.02),
+			Vector3(side * 0.025, -0.14, 0.06), 0.087 if thumb else 0.072)
+		_mesh(curve, Vector3.ZERO, skin, finger).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		grip_fingers.append(finger)
+
+func show_grip(index: int, delta: float) -> void:
+	if index >= 0 and pets[index].visible:
+		if grip_owner != index:
+			grip_owner = index
+			grip_progress = 0.0
+		# 和身体共用姿态与体型，挣扎和成长时指尖仍贴住肩侧。
+		grip.transform = pets[index].transform
+		grip_progress = move_toward(grip_progress, 1.0, delta * 7.0)
+	elif grip_owner >= 0:
+		# 松手后从最后的抓握位置张开上移，和正在落下的仓鼠分开。
+		grip_progress = move_toward(grip_progress, 0.0, delta * 8.0)
+		if grip_progress <= 0.0:
+			grip_owner = -1
+	else:
+		return
+	grip.visible = grip_progress > 0.0
+	var closed := smoothstep(0.0, 1.0, grip_progress)
+	grip_pivot.position.y = 0.47 * (1.0 - closed)
+	grip_fingers[0].rotation.z = -0.37 * (1.0 - closed)
+	grip_fingers[1].rotation.z = 0.31 * (1.0 - closed)
+
 func _furred_part(center: Vector3, radii: Vector3, count: int, index: int, is_head: bool, host: Node3D) -> void:
 	var base := ShaderMaterial.new()
 	base.shader = load("res://assets/hamster_undercoat.gdshader")
@@ -476,6 +547,8 @@ func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 6
 	pose.sleep = lerpf(pose.sleep, 1.0 if actor.state == "睡" else 0.0, blend)
 	var fighting: bool = actor.state == "打架"
 	pose.fight = lerpf(pose.fight, 1.0 if fighting else 0.0, blend)
+	pose.held = lerpf(pose.held, 1.0 if actor.state == "抱起" else 0.0, blend)
+	var wriggle: float = (0.76 + 0.24 * sin(phase * 5.0)) * pose.held
 	var fight_swing: float = actor.fight_swing if fighting else 0.0
 	var strike := maxf(fight_swing, 0.0)
 	var recoil := maxf(-fight_swing, 0.0)
@@ -494,13 +567,33 @@ func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 6
 	# 打架时后脚撑地，身体抬起，挥爪方前倾，另一只后仰。
 	pet.rotation.x = (-0.48 + 0.17 * strike - 0.13 * recoil) * pose.fight
 	pet.position.y += 0.15 * pose.fight
-	var pet_scale := 1.73 if index == 0 else 1.52
+	# 身体轻轻摆动，四脚用错开的节奏蹬动。
+	pet.rotation.x += sin(phase * 15.0) * 0.10 * wriggle
+	pet.rotation.z = sin(phase * 12.0 + 0.4) * 0.13 * wriggle
+	var size_ratio: float = actor.get("size_ratio", 1.0)
+	var pet_scale: float = ADULT_SIZE[index] * size_ratio
 	pet.scale = Vector3(pet_scale, pet_scale * lerpf(1.0, 0.74, pose.sleep), pet_scale)
 	pet.scale.y *= 1.0 + sin(phase * 2.7) * 0.008 * (1.0 - pose.stride)
+	heads[index].scale = Vector3.ONE * (1.0 + (1.0 - size_ratio) * 0.24)
+	if actor.get("lift", 0.0) <= 0.01 and actor.state != "抱起":
+		# 穿过较窄的窝门时稍微缩肩，越过门洞后恢复体型。
+		for door in CUBBIES:
+			var close_to_door := (1.0 - smoothstep(0.18, 0.50, absf(point.x - door.x))) * \
+				(1.0 - smoothstep(0.24, 0.76, absf(point.y - door.y + 0.24)))
+			pet.scale.x *= lerpf(1.0, 0.73, close_to_door)
+			pet.scale.y *= lerpf(1.0, 0.91, close_to_door)
 	var head_pitch: float = -0.3 if actor.state == "回应" else sin(phase * 2.4) * 0.015 + sin(gait) * 0.018 * pose.stride
+	var head_height := 0.375 if actor.state == "回应" else 0.325
+	if actor.state == "吃":
+		head_pitch = 0.22 + 0.09 * sin(phase * 17.0)
+		head_height = 0.30 + 0.012 * sin(phase * 17.0)
+	elif actor.state == "喝":
+		head_pitch = -0.25 - (1.0 - size_ratio) * 0.28 + 0.055 * sin(phase * 18.0)
+		head_height = 0.36 + (1.0 - size_ratio) * 0.25
 	head_pitch = lerpf(head_pitch, 0.28 + 0.12 * strike, pose.fight)
+	head_pitch += (0.12 * sin(phase * 16.0 + 0.7) - 0.10) * wriggle
 	pose.head_pitch = lerpf(pose.head_pitch, head_pitch, blend)
-	pose.head_y = lerpf(pose.head_y, 0.375 if actor.state == "回应" else 0.325, blend)
+	pose.head_y = lerpf(pose.head_y, head_height, blend)
 	heads[index].rotation.x = pose.head_pitch
 	heads[index].position.y = pose.head_y
 	# 眨眼与轻微鼻尖抽动按各自相位播放，不修改任何照料计时。
@@ -533,9 +626,13 @@ func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 6
 			var raised_paw := Vector3(side * 0.14, 0.19 - reach_forward * 0.05, 0.33 + reach_forward * 0.25)
 			target = target.lerp(raised_paw, pose.fight)
 			toe_angle = lerpf(toe_angle, -0.55 + reach_forward * 0.75, pose.fight)
-		if actor.state == "抱起":
-			target.y -= 0.065
-			toe_angle = sin(phase * 4 + offset) * 0.12
+		if pose.held > 0.001:
+			var kick_phase := phase * (19.0 if front else 21.0) + side * PI * 0.5 + (0.8 if front else 0.0)
+			var kick := sin(kick_phase)
+			var dangling := Vector3(side * (0.18 + 0.035 * cos(kick_phase)),
+				-0.025 + kick * 0.060, (0.27 if front else -0.27) + cos(kick_phase) * 0.11)
+			target = target.lerp(dangling, pose.held)
+			toe_angle = lerpf(toe_angle, kick * 0.46, pose.held)
 		paw.position = paw.position.lerp(target, 1.0 - exp(-delta * 24.0))
 		if actor.state != "睡" and on_wheel < 0.01 and float(actor.get("lift", 0.0)) < 0.01:
 			# 身体高度有缓动，脚掌仍须落在表面以上，不能因追赶目标高度而陷入垫料。
@@ -555,14 +652,24 @@ func update_supplies(angle: float, food: float, fill: float, dirty: float) -> vo
 	for index in range(seed_parts.size()):
 		seed_parts[index].visible = index < ceili(food * seed_parts.size())
 	water.visible = fill > 0.0
-	water.scale.y = maxf(0.02, fill)
-	water.position.y = 0.96 + 0.34 * fill
+	if water.visible:
+		# 液柱从瓶底往上缩放，液面环保持厚度，少量水也能看清。
+		var depth := WATER_HEIGHT * fill
+		water.position.y = WATER_BOTTOM + depth
+		water_column.position.y = -depth * 0.5
+		water_column.scale.y = fill
 	if is_equal_approx(dirt, dirty):
 		return
 	dirt = dirty
 	var colors := ["#dac4a1", "#ead9bb", "#e9dfc9", "#dbc9aa", "#d4c3a9"]
 	for index in range(grounds.size()):
 		grounds[index].set_shader_parameter("tint", Color(colors[index]).lerp(Color("#a7896b"), dirt * 0.57))
+
+func update_light(night: bool, delta: float) -> void:
+	var target := 1.0 if night else 0.0
+	night_mix = move_toward(night_mix, target, delta * 0.55) if night_mix >= 0.0 else target
+	sun.light_color = Color("#fff0d6").lerp(Color("#d8e3ff"), night_mix)
+	sun.light_energy = lerpf(0.67, 0.31, night_mix)
 
 func hit(index: int, point: Vector2) -> bool:
 	var bounds := Rect2()
@@ -584,6 +691,23 @@ func floor_point(screen: Vector2) -> Vector2:
 	var direction := camera.project_ray_normal(screen)
 	var result: Variant = Plane(Vector3.UP, 0.12).intersects_ray(origin, direction)
 	return Vector2(result.x, result.z) if result != null else Vector2(0, 3)
+
+func drop_target_at(screen: Vector2) -> Dictionary:
+	# 设施有高度，按可见范围选目标；落地仍走安全地面的规则。
+	var closest := INF
+	var selected: Dictionary = {}
+	for target in DROP_TARGETS:
+		var area: AABB = target.area
+		var bounds := Rect2(camera.unproject_position(area.position), Vector2.ZERO)
+		for corner in range(1, 8):
+			bounds = bounds.expand(camera.unproject_position(area.get_endpoint(corner)))
+		bounds = bounds.grow(8.0)
+		if bounds.has_point(screen):
+			var distance := ((screen - bounds.get_center()) / bounds.size).length_squared()
+			if distance < closest:
+				closest = distance
+				selected = target
+	return selected
 
 func nudge_bedding(at: Vector3, direction: Vector2) -> void:
 	var cell := Vector2i(floori(at.x * 2), floori(at.z * 2))
@@ -644,11 +768,17 @@ func sync_droppings(items: Array) -> void:
 	if signature == waste_signature:
 		return
 	waste_signature = signature
-	waste_model.multimesh.instance_count = items.size() * 3
+	var total := 0
+	for item in items:
+		total += int(item.get("count", 3))
+	waste_model.multimesh.instance_count = total
+	var instance := 0
 	for i in range(items.size()):
 		var item: Dictionary = items[i]
-		for j in range(3):
-			var x: float = item.x + (j - 1) * 0.072
+		var count: int = int(item.get("count", 3))
+		for j in range(count):
+			var x: float = item.x + (j - (count - 1) * 0.5) * 0.072
 			var z: float = item.z + sin(i * 2.1 + j) * 0.055
 			var pose := Basis.from_euler(Vector3(0, i * 2.39 + j, 0)).scaled(Vector3(0.070, 0.045, 0.125))
-			waste_model.multimesh.set_instance_transform(i * 3 + j, Transform3D(pose, Vector3(x, Meshes.bedding_height(x, z) + 0.024, z)))
+			waste_model.multimesh.set_instance_transform(instance, Transform3D(pose, Vector3(x, Meshes.bedding_height(x, z) + 0.024, z)))
+			instance += 1

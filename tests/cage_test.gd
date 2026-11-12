@@ -2,6 +2,8 @@ extends SceneTree
 
 const Cage = preload("res://cage.tscn")
 const Habitat = preload("res://habitat.gd")
+const Care = preload("res://care.gd")
+const CarePlay = preload("res://care_play.gd")
 var game: Control
 var failures := 0
 
@@ -18,6 +20,11 @@ func _run() -> void:
 		await RenderingServer.frame_post_draw
 	await process_frame
 	_check(game.tutorial == 0 and game.care.alive(0) and game.care.alive(1), "初次启动")
+	for index in range(2):
+		game.care.pets[index].food_at = game.care.now - roundi(Care.FOOD[index] * 0.5)
+	game.care.water_until = game.care.now + 12 * Care.HOUR
+	game.care.bedding_at = game.care.now - 36 * Care.HOUR
+	game.care.add_dropping(Vector2(1.5, 2.0), 2)
 	for index in range(3):
 		var button := game.stage.get_child(index) as Button
 		await _mouse(button.get_global_rect().get_center(), true)
@@ -57,6 +64,15 @@ func _run() -> void:
 	_check(game.modal.visible and game.modal_content.get_child(0).text == "家长", "家长入口须长按")
 	game._close_dialog()
 	_check(game.size.x > 0 and game.stage.scale.x > 0, "布局可见")
+	game.care.water_until = game.care.now + 5 * Care.HOUR
+	_check(game._needs() == "水壶里的水快喝完了。", "水少时只显示一条共用水壶提示")
+	game.care.water_until = game.care.now
+	_check(game._needs() == "水壶没水了，先加水吧。", "水壶为空时只显示一条加水提示")
+	for index in range(2):
+		_check(game._activity_problem(index, "喝", index) == game._needs(), "两只都不能从空水壶喝水")
+	game.care.refill("water")
+	_check(game.care.water_fill() == 1.0 and not game._needs().contains("水壶"), "加水同时恢复水位并消除提示")
+	await _check_water_levels()
 
 	if DisplayServer.get_name() != "headless":
 		game.notice_left = 0.0
@@ -80,6 +96,35 @@ func _run() -> void:
 			DirAccess.remove_absolute(game.care.path + suffix)
 	print("笼子交互测试完成，失败项：", failures)
 	quit(0 if failures == 0 else 1)
+
+func _check_water_levels() -> void:
+	for remaining in [0, 2 * Care.HOUR, 12 * Care.HOUR, Care.WATER_DURATION]:
+		game.care.water_until = game.care.now + remaining
+		await process_frame
+		var fill: float = game.care.water_fill()
+		_check(game.habitat.water.visible == (fill > 0.0), "笼子里只在有水时显示液面")
+		if fill > 0.0:
+			_check(is_equal_approx(game.habitat.water.position.y, Habitat.WATER_BOTTOM + Habitat.WATER_HEIGHT * fill), "笼子液面按实际剩余水量升降")
+		if remaining == 2 * Care.HOUR and DisplayServer.get_name() != "headless":
+			await RenderingServer.frame_post_draw
+			root.get_texture().get_image().save_png("res://dist/water-bottle-low.png")
+		game._care_action(1)
+		var play = game.care_play
+		var opened: float = game.care.water_fill()
+		var water_until: int = game.care.water_until
+		_check(is_equal_approx(play.water_level(), opened), "加水小游戏初始液面和水壶余量一致")
+		if remaining == 2 * Care.HOUR and DisplayServer.get_name() != "headless":
+			await process_frame
+			await RenderingServer.frame_post_draw
+			root.get_texture().get_image().save_png("res://dist/water-minigame-low.png")
+		play._press(CarePlay.CAP_HOME)
+		play._drag(CarePlay.CAP_HOME - Vector2(0, 75))
+		_check(is_equal_approx(play.water_level(), opened), "开始倒旧水时液面不跳高")
+		play._process(play.DRAIN_TIME * 0.5)
+		_check(is_equal_approx(play.water_level(), opened * 0.5), "旧水从实际水位排空")
+		game._cancel_care()
+		_check(game.care.water_until == water_until, "取消加水不改变原水壶的存档余量")
+		await process_frame
 
 func _mouse(point: Vector2, pressed: bool) -> void:
 	var motion := InputEventMouseMotion.new()
@@ -111,29 +156,71 @@ func _drag(point: Vector2) -> void:
 func _play_care(kind: int) -> void:
 	if not is_instance_valid(game.care_play):
 		return
+	var play = game.care_play
+	await _care_snapshot(kind, "start")
 	if kind == 0:
-		for repeat in range(3):
-			await _mouse(Vector2(220, 390), true)
-			await _drag(Vector2(670, 370))
-			await _mouse(Vector2(670, 370), false)
+		_check(absf(play.initial_food_fill - 0.5) < 0.01, "食盆沿用实际余粮")
+		await _mouse(CarePlay.TOOL_REST, true)
+		await _drag(CarePlay.FOOD_BOWL)
+		await _mouse(CarePlay.FOOD_BOWL, false)
+		_check(play.food_served == 0 and play.grain_pour_left == 0.0, "空勺拖到食盆不会添粮")
+		for scoop in range(CarePlay.SCOOPS):
+			await _mouse(CarePlay.TOOL_REST, true)
+			await _drag(CarePlay.FOOD_BAG)
+			await create_timer(CarePlay.SCOOP_TIME + 0.12).timeout
+			_check(play.scoop_fill == 1.0, "停在粮袋中把勺子舀满")
+			await _drag(CarePlay.FOOD_BOWL)
+			_check(play.food_served == scoop and play.grain_pour_left == 0.0, "勺子到碗上等松手才倒")
+			await _mouse(CarePlay.FOOD_BOWL, false)
+			if scoop == 0:
+				await create_timer(0.18).timeout
+				await _care_snapshot(kind, "pour")
+			await create_timer(CarePlay.GRAIN_POUR_TIME + 0.08).timeout
+			_check(play.food_served == scoop + 1, "倒完一勺后，碗里的粮食增加")
 	elif kind == 1:
-		await _mouse(Vector2(670, 235), true)
-		await _drag(Vector2(670, 160))
-		await _mouse(Vector2(670, 160), false)
-		await create_timer(0.85).timeout
-		await _mouse(Vector2(220, 390), true)
-		await _drag(Vector2(610, 260))
-		await create_timer(2.15).timeout
-		await _mouse(Vector2(610, 260), false)
+		var original_until: int = game.care.water_until
+		await _mouse(CarePlay.CAP_HOME, true)
+		await _drag(CarePlay.CAP_HOME - Vector2(0, 75))
+		await _mouse(CarePlay.CAP_HOME - Vector2(0, 75), false)
+		await create_timer(CarePlay.DRAIN_TIME + 0.12).timeout
+		_check(play.water_level() == 0.0, "倒掉旧水后从空瓶开始")
+		await _mouse(CarePlay.TOOL_REST, true)
+		await _drag(CarePlay.POUR_POSITION)
+		await create_timer(0.64).timeout
+		await _care_snapshot(kind, "pour")
+		await _drag(CarePlay.TOOL_REST)
+		var paused: float = play.water_level()
+		await create_timer(0.15).timeout
+		_check(paused > 0.0 and paused < 1.0 and play.water_level() == paused, "壶嘴离开瓶口，水位暂停上涨")
+		await _drag(CarePlay.POUR_POSITION)
+		await create_timer(CarePlay.POUR_TIME + 0.15).timeout
+		await _mouse(CarePlay.POUR_POSITION, false)
+		_check(play.phase == CarePlay.WaterStep.CLOSE and game.care.water_until == original_until, "倒满后等盖好才保存")
+		await _mouse(CarePlay.CAP_REST, true)
+		await _drag(CarePlay.CAP_HOME)
+		await _mouse(CarePlay.CAP_HOME, false)
 	else:
+		_check(play.pellets.size() >= 2, "托盘显示当前笼子的便便")
 		for phase in range(2):
-			await _mouse(Vector2(220, 390), true)
-			for row in range(2):
-				for col in range(4):
-					await _drag(Vector2(410 + col * 120, 270 + row * 125))
-			await _mouse(Vector2(770, 395), false)
+			await _mouse(CarePlay.TOOL_REST, true)
+			for row in range(CarePlay.BEDDING_ROWS):
+				var y := 248.5 + row * 61.0
+				var from := Vector2(382 if row % 2 == 0 else 837, y)
+				var to := Vector2(837 if row % 2 == 0 else 382, y)
+				await _drag(from)
+				await _drag(to)
+				if row == 1:
+					_check(play.covered.size() >= 14, "两次长划扫过路径上的木屑")
+					await _care_snapshot(kind, "sweep-%d" % phase)
+			await _mouse(Vector2(382, 431.5), false)
+		_check(play.done_delay >= 0.0, "扫净后铺上新木屑才完成")
 	await create_timer(0.8).timeout
 	_check(not is_instance_valid(game.care_play), "完成照料小游戏 %d" % kind)
+
+func _care_snapshot(kind: int, step: String) -> void:
+	if DisplayServer.get_name() != "headless":
+		await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png("res://dist/care-detail-%d-%s.png" % [kind, step])
 
 func _check(condition: bool, label: String) -> void:
 	if not condition:

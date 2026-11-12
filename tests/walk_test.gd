@@ -2,6 +2,7 @@ extends SceneTree
 
 const Cage = preload("res://cage.tscn")
 const Meshes = preload("res://habitat_meshes.gd")
+const Care = preload("res://care.gd")
 var game: Control
 var failures := 0
 
@@ -18,6 +19,9 @@ func _run() -> void:
 	game.care.path = "user://walk-test-%d.json" % OS.get_process_id()
 	root.add_child(game)
 	game.set_process(false)
+	# 现有步行基线以成年仓鼠的尺寸和间距为准。
+	for pet in game.care.pets:
+		pet.born_at = game.care.now - Care.ADULT_AGE
 	await process_frame
 	game.tutorial = 3
 	game.care.tutorial_seen = true
@@ -30,7 +34,6 @@ func _run() -> void:
 		var actor: Dictionary = game.actors[0]
 		actor.pos = Vector2(1.0, 3.2)
 		actor.dir = PI * 0.5
-		actor.poop_left = 1000.0
 		game.actors[1].pos = Vector2(3.12, -1.62)
 		game.actors[1].state = "睡"
 		game.actors[1].left = 1000
@@ -93,7 +96,6 @@ func _capture_walk() -> void:
 	game.actors[0] = game._actor(0, 10)
 	game.actors[0].pos = Vector2(-1.4, 2.8)
 	game.actors[0].dir = PI / 2
-	game.actors[0].poop_left = 1000
 	game._travel(game.actors[0], Vector2(2.8, 2.8), "嗅")
 	# 只取真实渲染帧，保留完整笼子；六帧用于核对转弯和脚掌位置。
 	game.actors[1].pos = Vector2(3.12, -1.62)
@@ -124,7 +126,6 @@ func _encounter(delta: float) -> void:
 		game.actors[i] = game._actor(0, 10)
 		game.actors[i].pos = goals[1-i]
 		game.actors[i].dir = PI / 2 if i == 0 else -PI / 2
-		game.actors[i].poop_left = 1000
 		game._travel(game.actors[i], goals[i], "嗅")
 	var minimum := INF
 	var max_step := 0.0

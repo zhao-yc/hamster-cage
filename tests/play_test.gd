@@ -20,6 +20,11 @@ func _run() -> void:
 	game.care.path = "user://play-test-%d.json" % OS.get_process_id()
 	root.add_child(game)
 	game.set_process(false)
+	game.clock_offset = 20 * Care.HOUR - posmod(game.care.now, Care.DAY)
+	game.care.bedding_at = game.care.now - 3 * Care.HOUR
+	for pet in game.care.pets:
+		pet.born_at = game.care.now - Care.ADULT_AGE
+		pet.waste_at = game.care.bedding_at
 	# 加速模拟会在极短时间内触发大量提示，关闭测试存档的音效。
 	game.care.sound = false
 	await process_frame
@@ -63,23 +68,60 @@ func _run() -> void:
 	check(game.actors[0].state == "打架" and game.actors[1].state == "打架", "抱开前两只正在打架")
 	var center: Vector2 = game.habitat.camera.unproject_position(game.habitat.pets[0].position + Vector3(0, 0.5, 0))
 	_touch(0, center - Vector2(14, 0), true)
-	check(game.held == -1, "单指不抱起")
+	check(game.held == -1 and not game.habitat.grip.visible, "单指不抱起也不显示手指")
 	_touch(1, center + Vector2(14, 0), true)
 	check(game.held == 0 and game.social_left == 0 and game.actors[1].state == "嗅", "双指抱起会打断打架")
 	for frame in range(12):
 		game._process(0.05)
 	check(game.actors[0].lift > 1.1, "抱起离开地面")
+	var pet: Node3D = game.habitat.pets[0]
+	var paw: Node3D = game.habitat.feet[0][0]
+	var first_roll := pet.rotation.z
+	var first_paw := paw.position
+	var roll_change := 0.0
+	var paw_travel := 0.0
+	for frame in range(8):
+		game._process(0.05)
+		roll_change = maxf(roll_change, absf(pet.rotation.z - first_roll))
+		paw_travel = maxf(paw_travel, paw.position.distance_to(first_paw))
+	check(roll_change > 0.04 and paw_travel > 0.04, "悬空时有扭身和蹬腿动作")
+	check(game.habitat.grip.visible and game.habitat.grip_owner == 0 and game.habitat.grip_fingers.size() == 2,
+		"捏起后显示两根手指")
+	check(game.habitat.grip_pivot.get_children() == game.habitat.grip_fingers,
+		"捏起的模型只有拇指和食指")
+	if DisplayServer.get_name() != "headless":
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png("res://dist/hamster-pinch.png") == OK, "保存捏起效果图")
 	var target: Vector2 = game.habitat.camera.unproject_position(Vector3(2.5, 0.12, 3.2))
 	for i in range(2):
 		var motion := InputEventScreenDrag.new()
 		motion.index = i
 		motion.position = target + Vector2(-14 if i == 0 else 14, 0)
 		game._input(motion)
+	game._process(0.05)
+	check(game.habitat.grip.transform.is_equal_approx(pet.transform), "拖动和挣扎时，手指与身体保持同一姿态")
+	var release_height: float = game.habitat.grip_fingers[0].global_position.y
 	_touch(0, target, false)
 	_touch(1, target, false)
 	check(game.held == -1 and game.touches.is_empty(), "任一手指松开后安全放下并清理手势")
 	check(game.actors[0].pos.distance_to(game.actors[1].pos) >= 1.75, "落点避开同伴")
 	check(game.social_cooldown >= 90, "抱开后不立刻重新追逐")
+	game._process(0.04)
+	check(game.habitat.grip_fingers[0].global_position.y > release_height, "松手时手指上移收回")
+	for frame in range(16):
+		game._process(0.04)
+	check(not game.habitat.grip.visible and is_zero_approx(game.actors[0].lift) and absf(pet.rotation.z) < 0.01,
+		"放下后手指隐藏且仓鼠恢复正常姿态")
+	var mouse := InputEventMouseButton.new()
+	mouse.button_index = MOUSE_BUTTON_RIGHT
+	mouse.position = game.habitat.camera.unproject_position(game.habitat.pets[1].position + Vector3(0, 0.5, 0))
+	mouse.pressed = true
+	game._input(mouse)
+	game._process(0.04)
+	check(game.held == 1 and game.habitat.grip_owner == 1 and game.habitat.grip.visible, "电脑右键抱起也显示手指")
+	mouse.pressed = false
+	game._input(mouse)
 	var old_food: int = game.care.pets[0].food_at
 	game._care_action(0)
 	game.care_play._press(Vector2(220, 390))
@@ -111,6 +153,7 @@ func _run() -> void:
 
 func _start_encounter() -> void:
 	# 让两只在开阔处相遇，通过正常社交触发路径进入动作。
+	game._end_social()
 	for i in range(2):
 		var actor: Dictionary = game.actors[i]
 		actor.pos = Vector2(-0.9 if i == 0 else 0.9, 2.6)
@@ -118,7 +161,6 @@ func _start_encounter() -> void:
 		actor.velocity = Vector2.ZERO
 		actor.state = "嗅"
 		actor.left = 10.0
-		actor.poop_left = 60.0
 	game.social_cooldown = 0
 	game._process(0.02)
 
