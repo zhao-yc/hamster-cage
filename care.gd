@@ -5,7 +5,7 @@ const GRACE := 72 * HOUR
 const BEDDING_TIME := 48 * HOUR
 const WATER := [24 * HOUR, 30 * HOUR]
 const FOOD := [36 * HOUR, 42 * HOUR]
-const NAMES := ["灰灰", "白白"]
+const NAMES := ["肥嘟嘟", "好可爱"]
 const VERSION := 1
 
 var path: String

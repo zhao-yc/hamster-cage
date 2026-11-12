@@ -28,13 +28,14 @@ public:
 
 static HamsterAR *hamster_ar = nullptr;
 
-extern "C" void hamster_ar_init() {
+// Godot 4.5.1 导出的 dummy.cpp 通过 C++ 声明调用插件的注册入口。
+void hamster_ar_init() {
 	GDREGISTER_CLASS(HamsterAR);
 	hamster_ar = memnew(HamsterAR);
 	Engine::get_singleton()->add_singleton(Engine::Singleton("HamsterAR", hamster_ar));
 }
 
-extern "C" void hamster_ar_deinit() {
+void hamster_ar_deinit() {
 	hamster_ar_close();
 	Engine::get_singleton()->remove_singleton("HamsterAR");
 	memdelete(hamster_ar);

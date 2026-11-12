@@ -25,6 +25,7 @@ func _run() -> void:
 		_check(is_instance_valid(game.care_play), "打开照料小游戏")
 		await _play_care(index)
 		_check(game.tutorial == index + 1, "照料引导步骤 %d" % (index + 1))
+		_check_voice(["huihui-food", "baibai-water", "huihui-bedding"][index])
 	_check(game.tutorial == 3 and game.care.tutorial_seen, "照料按钮完成新手提示")
 	# 点击回应测试固定为地面休息状态，不能保留自主选中的滚轮状态再强行移到地面。
 	game.actors[0].pos = Vector2(-1.3, 1.5)
@@ -40,6 +41,23 @@ func _run() -> void:
 	await _mouse(point, true)
 	await _mouse(point, false)
 	_check(game.actors[0].state == "回应", "点击仓鼠")
+	_check_voice("huihui-greet")
+	_check(game.audio.playing and game.notice == "肥嘟嘟 · 川川，我是肥嘟嘟！", "点击后叫川川并显示台词")
+	await create_timer(0.25).timeout
+	var before_repeat: float = game.audio.get_playback_position()
+	await _mouse(point, true)
+	await _mouse(point, false)
+	_check(before_repeat > 0.1 and game.audio.get_playback_position() >= before_repeat, "连点时不重播当前句")
+	var white_point: Vector2 = game.habitat.camera.unproject_position(game.habitat.pets[1].position + Vector3(0, 0.28, 0))
+	await _mouse(white_point, true)
+	await _mouse(white_point, false)
+	_check_voice("baibai-wheel")
+	await _mouse(point, true, MOUSE_BUTTON_RIGHT)
+	_check(game.held == 0, "右键抱起肥嘟嘟")
+	_check_voice("huihui-lift")
+	await _mouse(point, false, MOUSE_BUTTON_RIGHT)
+	_check(game.held == -1, "松开右键放下肥嘟嘟")
+	_check_voice("huihui-drop")
 	game.actors[0].state = "跑"
 	game.actors[0].pos = Habitat.WHEEL_RUN
 	game.wheel_owner = 0
@@ -49,6 +67,14 @@ func _run() -> void:
 	var settings := game.gear as Button
 	await _mouse(settings.get_global_rect().get_center(), true)
 	await _mouse(settings.get_global_rect().get_center(), false)
+	# 设置弹窗里的按钮由 VBoxContainer 延迟布局，下一帧再取中心坐标。
+	await process_frame
+	var sound := game.modal_content.get_child(1) as Button
+	var sound_point := sound.get_global_rect().get_center()
+	await _mouse(sound_point, true)
+	await _mouse(sound_point, false)
+	_check(not game.care.sound and not game.audio.playing, "关闭声音立即停止配音")
+	await process_frame
 	var family := game.modal_content.get_child(3) as Button
 	var family_point := family.get_global_rect().get_center()
 	await _mouse(family_point, true)
@@ -57,6 +83,14 @@ func _run() -> void:
 	_check(game.modal.visible and game.modal_content.get_child(0).text == "家长", "家长入口须长按")
 	game._close_dialog()
 	_check(game.size.x > 0 and game.stage.scale.x > 0, "布局可见")
+	game.actors[1].pos = Vector2(1.3, 1.5)
+	game.actors[1].state = "嗅"
+	game.actors[1].left = 10.0
+	await process_frame
+	white_point = game.habitat.camera.unproject_position(game.habitat.pets[1].position + Vector3(0, 0.28, 0))
+	await _mouse(white_point, true)
+	await _mouse(white_point, false)
+	_check(game.notice == "好可爱 · 川川，你好呀，我是好可爱！" and not game.audio.playing, "静音时点好可爱仍显示台词")
 
 	if DisplayServer.get_name() != "headless":
 		game.notice_left = 0.0
@@ -81,13 +115,17 @@ func _run() -> void:
 	print("笼子交互测试完成，失败项：", failures)
 	quit(0 if failures == 0 else 1)
 
-func _mouse(point: Vector2, pressed: bool) -> void:
+func _check_voice(clip: String) -> void:
+	var stream: AudioStream = game.audio.stream
+	_check(stream is AudioStreamWAV and stream.resource_path.ends_with("/" + clip + ".wav"), "播放 " + clip)
+
+func _mouse(point: Vector2, pressed: bool, button: MouseButton = MOUSE_BUTTON_LEFT) -> void:
 	var motion := InputEventMouseMotion.new()
 	motion.position = point
 	motion.global_position = point
 	Input.parse_input_event(motion)
 	var click := InputEventMouseButton.new()
-	click.button_index = MOUSE_BUTTON_LEFT
+	click.button_index = button
 	click.pressed = pressed
 	click.position = point
 	click.global_position = point
