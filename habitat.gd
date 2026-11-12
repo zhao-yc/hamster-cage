@@ -5,6 +5,10 @@ const Hamster = preload("res://hamster_geometry.gd")
 const WHEEL_RUN := Vector2(3.12, -1.62)
 const WHEEL_ENTRY := Vector2(3.12, -0.48)
 const BOWL := Vector2(-2.90, 0.75)
+const BOWL_SCALE := 1.55
+const BOWL_RADIUS := 0.48 * BOWL_SCALE
+const BOWL_BASE := 0.07
+const BOWL_RIM_HEIGHT := BOWL_BASE + 0.32 * BOWL_SCALE
 const DRINK := Vector2(0.62, -2.44)
 const CUBBIES := [Vector2(-3.70, -1.51), Vector2(-1.39, -1.70)]
 const NEST_DEPTH := 1.17
@@ -328,8 +332,8 @@ func _wheel() -> void:
 func _supplies() -> void:
 	var ceramic := _material(Color("#c39463"))
 	var lip := _speckled(Color("#e0cdb1"))
-	var bowl := _node(Vector3(BOWL.x, 0.07, BOWL.y), self)
-	bowl.scale = Vector3.ONE * 1.55
+	var bowl := _node(Vector3(BOWL.x, BOWL_BASE, BOWL.y), self)
+	bowl.scale = Vector3.ONE * BOWL_SCALE
 	_contact(Vector3(0, 0.01, 0), Vector2(1.5, 1.5), bowl)
 	var bowl_profile: Array[Vector2] = [Vector2(0, 0), Vector2(0.37, 0), Vector2(0.43, 0.04),
 		Vector2(0.48, 0.27), Vector2(0.47, 0.31), Vector2(0.43, 0.32), Vector2(0.40, 0.28),
@@ -584,9 +588,13 @@ func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 6
 			pet.scale.y *= lerpf(1.0, 0.91, close_to_door)
 	var head_pitch: float = -0.3 if actor.state == "回应" else sin(phase * 2.4) * 0.015 + sin(gait) * 0.018 * pose.stride
 	var head_height := 0.375 if actor.state == "回应" else 0.325
+	var head_depth := 0.235
 	if actor.state == "吃":
-		head_pitch = 0.22 + 0.09 * sin(phase * 17.0)
-		head_height = 0.30 + 0.012 * sin(phase * 17.0)
+		# 先把嘴抬到碗沿上方，面对碗再探头，身体和脚都留在外面。
+		var toward_bowl := Vector2(sin(actor.dir), cos(actor.dir)).dot((BOWL - point).normalized())
+		head_pitch = 0.13 + 0.06 * sin(phase * 17.0)
+		head_height = maxf(0.30, (BOWL_RIM_HEIGHT + 0.045 - pet.position.y) / pet.scale.y + 0.087)
+		head_depth += 0.082 * smoothstep(0.72, 0.99, toward_bowl)
 	elif actor.state == "喝":
 		head_pitch = -0.25 - (1.0 - size_ratio) * 0.28 + 0.055 * sin(phase * 18.0)
 		head_height = 0.36 + (1.0 - size_ratio) * 0.25
@@ -596,6 +604,7 @@ func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 6
 	pose.head_y = lerpf(pose.head_y, head_height, blend)
 	heads[index].rotation.x = pose.head_pitch
 	heads[index].position.y = pose.head_y
+	heads[index].position.z = lerpf(heads[index].position.z, head_depth, blend)
 	# 眨眼与轻微鼻尖抽动按各自相位播放，不修改任何照料计时。
 	var blink := absf(fmod(phase + index * 1.7, 5.4) - 5.15)
 	for eye in eyelids[index]:

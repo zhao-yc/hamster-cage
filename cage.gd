@@ -33,6 +33,7 @@ var ui_font: Font
 var audio: AudioStreamPlayer
 var modal: ColorRect
 var modal_content: VBoxContainer
+var settings_age_label: Label
 var memorial := -1
 var farewells: Array[int] = []
 var notice := ""
@@ -159,6 +160,17 @@ func _button(title: String, rect: Rect2, color: Color, font_size: int = 23, host
 	button.add_theme_font_size_override("font_size", font_size)
 	# 焦点文字有独立的主题颜色，浅色按钮获得焦点后也要保持深色字。
 	button.add_theme_color_override("font_focus_color", Art.INK)
+	button.gui_input.connect(func(event: InputEvent) -> void:
+		# 指针松开后再清焦点，按下样式和键盘导航仍可正常使用。
+		var mouse_release: bool = event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed
+		var touch_release: bool = event is InputEventScreenTouch and not event.pressed
+		if mouse_release or touch_release:
+			(func() -> void:
+				# 有些按钮在松手时会重建弹窗，旧按钮可能已经离开场景树。
+				if is_instance_valid(button) and button.is_inside_tree():
+					button.release_focus()
+			).call_deferred()
+	)
 	for state in ["normal", "hover", "pressed"]:
 		var style := StyleBoxFlat.new()
 		style.bg_color = color.lightened(0.15) if state == "hover" else color
@@ -189,13 +201,14 @@ func _make_modal() -> void:
 	modal_content = VBoxContainer.new()
 	modal_content.position = Vector2(38, 29)
 	modal_content.size = Vector2(536, 398)
-	modal_content.add_theme_constant_override("separation", 13)
 	panel.add_child(modal_content)
 	modal.hide()
 
 func _dialog(title: String, body: String) -> void:
 	_cancel_gestures()
 	parent_hold = -1
+	settings_age_label = null
+	modal_content.add_theme_constant_override("separation", 13)
 	modal.show()
 	for child in modal_content.get_children():
 		modal_content.remove_child(child)
@@ -204,7 +217,7 @@ func _dialog(title: String, body: String) -> void:
 	if not body.is_empty():
 		_dialog_label(body, 20)
 
-func _dialog_label(value: String, font_size: int) -> void:
+func _dialog_label(value: String, font_size: int) -> Label:
 	var label := Label.new()
 	label.text = value
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -213,6 +226,7 @@ func _dialog_label(value: String, font_size: int) -> void:
 	label.add_theme_font_size_override("font_size", font_size)
 	label.add_theme_color_override("font_color", Art.INK)
 	modal_content.add_child(label)
+	return label
 
 func _dialog_button(value: String, action: Callable) -> void:
 	var button := _button(value, Rect2(0, 0, 0, 47), Color("#e5d5ad"), 19, modal_content)
@@ -267,7 +281,13 @@ func _show_parent() -> void:
 	_dialog_button("返回", _close_dialog)
 
 func _show_settings() -> void:
+	_refresh()
+	if memorial != -1:
+		return
 	_dialog("设置", "")
+	# 两只的年龄共用一行，支持 AR 时也能把所有按钮留在面板内。
+	modal_content.add_theme_constant_override("separation", 10)
+	settings_age_label = _dialog_label(_settings_ages(), 18)
 	_dialog_button("声音开" if care.sound else "声音关", func() -> void:
 		care.sound = not care.sound
 		_save()
@@ -291,6 +311,21 @@ func _show_settings() -> void:
 	_dialog_button("回到笼子", _close_dialog)
 	_dialog_label("双指捏住可抱起；电脑用鼠标右键拖动", 16)
 
+func _settings_ages() -> String:
+	var ages: Array[String] = []
+	for index in range(Care.NAMES.size()):
+		var days := care.age_days(index)
+		var age := "%d 天大" % days
+		if days >= 365:
+			@warning_ignore("integer_division")
+			age = "%d 岁" % (days / 365)
+			if days % 365 != 0:
+				age += " %d 天" % (days % 365)
+		if not care.alive(index):
+			age += "（离世时）"
+		ages.append("%s %s" % [Care.NAMES[index], age])
+	return "　·　".join(ages)
+
 func _confirm_adopt(index: int) -> void:
 	_dialog("确认领养", "新的%s会来到笼子，旧照片会留在相册里。" % Care.NAMES[index])
 	_dialog_button("确认领养", _adopt.bind(index))
@@ -308,6 +343,7 @@ func _adopt(index: int) -> void:
 
 func _close_dialog() -> void:
 	memorial = -1
+	settings_age_label = null
 	modal.hide()
 	if not farewells.is_empty():
 		_show_farewell()
@@ -375,6 +411,8 @@ func _refresh() -> void:
 	if care.now - previous > 120:
 		habitat.sync_droppings(care.droppings)
 	if departed.is_empty():
+		if settings_age_label != null:
+			settings_age_label.text = _settings_ages()
 		return
 	farewells.append_array(departed)
 	if ar_pending:
@@ -444,6 +482,7 @@ func _process(delta: float) -> void:
 	for index in range(actors.size()):
 		actors[index].size_ratio = care.growth_scale(index)
 		actors[index].senior = care.senior(index)
+		actors[index].bowl_clearance = Motion.bowl_clearance(index, actors[index].size_ratio)
 	var previous := [actors[0].pos, actors[1].pos]
 	_social(frame_delta)
 	for index in range(actors.size()):
@@ -461,6 +500,8 @@ func _process(delta: float) -> void:
 	var airborne := held if held >= 0 and actors[held].lift >= 1.1 else -1
 	Motion.separate(actors, [care.alive(0), care.alive(1)], airborne)
 	for index in range(actors.size()):
+		if care.alive(index) and index != airborne:
+			Motion.constrain_bowl(actors[index])
 		var distance: float = actors[index].pos.distance_to(previous[index]) if index != held else 0.0
 		actors[index].speed = distance / maxf(frame_delta, 0.001)
 		# 行走步态随真正走过的距离推进；停下或被挡住时不再原地高速踏步。
@@ -593,7 +634,8 @@ func _start_activity(index: int, task: String, nest: int) -> void:
 	var size_ratio := care.growth_scale(index)
 	match task:
 		"吃":
-			_travel(actor, Habitat.BOWL + Vector2(0.74 + 0.48 * size_ratio, 0), "吃")
+			var seat := Motion.bowl_clearance(index, size_ratio) + 0.06
+			_travel(actor, Habitat.BOWL + Vector2(seat, 0), "吃")
 		"喝":
 			_travel(actor, Habitat.DRINK - Vector2(0, 0.46 * (1.0 - size_ratio)), "喝")
 		"睡":
@@ -623,6 +665,7 @@ func _travel(actor: Dictionary, goal: Vector2, next: String, entrance: Vector2 =
 	if entrance.is_finite():
 		actor.route.append(entrance)
 	actor.route.append(goal)
+	actor.route = Motion.bowl_route(actor.pos, actor.route, float(actor.get("bowl_clearance", Motion.ADULT_BOWL_CLEARANCE)))
 	_set_goal(actor, actor.route.pop_front())
 
 func _set_goal(actor: Dictionary, goal: Vector2) -> void:
@@ -797,7 +840,8 @@ func _drag_held(point: Vector2) -> void:
 	if held < 0 or (not held_floor.is_finite() and point.distance_to(held_start) < 8.0):
 		return
 	held_target = habitat.drop_target_at(point)
-	held_floor = held_target.landing if not held_target.is_empty() else Motion.safe_floor(habitat.floor_point(point))
+	var bowl_margin := Motion.bowl_clearance(held, care.growth_scale(held))
+	held_floor = Motion.outside_bowl(held_target.landing, bowl_margin) if not held_target.is_empty() else Motion.safe_floor(habitat.floor_point(point), bowl_margin)
 
 func _drop_held(allow_activity: bool = true) -> void:
 	if held < 0:
@@ -810,7 +854,8 @@ func _drop_held(allow_activity: bool = true) -> void:
 	held = -1
 	held_floor = Vector2.INF
 	held_target = {}
-	actor.pos = Motion.drop(landing, actors[1-index].pos, care.alive(1-index), at_entrance, Motion.spacing(actors) + 0.08)
+	var bowl_margin := Motion.bowl_clearance(index, care.growth_scale(index))
+	actor.pos = Motion.drop(landing, actors[1-index].pos, care.alive(1-index), at_entrance, Motion.spacing(actors) + 0.08, bowl_margin)
 	actor.state = "回应"
 	actor.facing = 0.0
 	actor.velocity = Vector2.ZERO

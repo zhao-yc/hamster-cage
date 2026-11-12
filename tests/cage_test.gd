@@ -7,6 +7,10 @@ const CarePlay = preload("res://care_play.gd")
 var game: Control
 var failures := 0
 
+class TestAR extends RefCounted:
+	func is_supported() -> bool:
+		return true
+
 func _initialize() -> void:
 	call_deferred("_run")
 
@@ -71,19 +75,39 @@ func _run() -> void:
 	await create_timer(0.18).timeout
 	_check(game.wheel_angle > 0, "滚轮旋转")
 
+	game.care.pets[1].born_at -= 365 * Care.DAY
+	game.ar = TestAR.new()
 	var settings := game.gear as Button
 	await _mouse(settings.get_global_rect().get_center(), true)
 	await _mouse(settings.get_global_rect().get_center(), false)
 	# 设置弹窗里的按钮由 VBoxContainer 延迟布局，下一帧再取中心坐标。
 	await process_frame
-	var sound := game.modal_content.get_child(1) as Button
+	var age_label := game.modal_content.get_child(1) as Label
+	_check(age_label.text == "肥嘟嘟 21 天大　·　好可爱 1 岁 21 天", "设置页分别显示幼崽和成年仓鼠的年龄")
+	game.care.pets[0].born_at -= Care.DAY
+	game._refresh()
+	_check(age_label.text.begins_with("肥嘟嘟 22 天大"), "设置页打开时也会更新日龄")
+	var footer := game.modal_content.get_child(-1) as Label
+	_check(footer.position.y + footer.size.y <= game.modal_content.get_parent().size.y - game.modal_content.position.y - 14.0,
+		"显示年龄和 AR 按钮后，设置内容仍在面板内")
+	if DisplayServer.get_name() != "headless":
+		await _snapshot(Vector2i(1024, 640), "settings-age-16x10")
+		await _snapshot(Vector2i(1024, 768), "settings-age-4x3")
+		root.size = Vector2i(1024, 640)
+		await process_frame
+		await process_frame
+	var sound := game.modal_content.get_child(2) as Button
 	var sound_point := sound.get_global_rect().get_center()
 	await _mouse(sound_point, true)
 	await _mouse(sound_point, false)
 	_check(not game.care.sound and not game.audio.playing, "关闭声音立即停止配音")
 	await process_frame
-	var family := game.modal_content.get_child(3) as Button
+	var family := game.modal_content.get_child(4) as Button
 	var family_point := family.get_global_rect().get_center()
+	await _mouse(family_point, true)
+	await _mouse(family_point, false)
+	await process_frame
+	_check(not family.has_focus(), "短按松开后不保留按钮的焦点边框")
 	await _mouse(family_point, true)
 	await create_timer(1.3).timeout
 	await _mouse(family_point, false)
@@ -152,7 +176,7 @@ func _check_water_levels() -> void:
 			await RenderingServer.frame_post_draw
 			root.get_texture().get_image().save_png("res://dist/water-minigame-low.png")
 		play._press(CarePlay.CAP_HOME)
-		play._drag(CarePlay.CAP_HOME - Vector2(0, 75))
+		play._drag(CarePlay.CAP_REST)
 		_check(is_equal_approx(play.water_level(), opened), "开始倒旧水时液面不跳高")
 		play._process(play.DRAIN_TIME * 0.5)
 		_check(is_equal_approx(play.water_level(), opened * 0.5), "旧水从实际水位排空")
@@ -203,13 +227,16 @@ func _play_care(kind: int) -> void:
 		await _mouse(CarePlay.FOOD_BOWL, false)
 		_check(play.food_served == 0 and play.grain_pour_left == 0.0, "空勺拖到食盆不会添粮")
 		for scoop in range(CarePlay.SCOOPS):
-			await _mouse(CarePlay.TOOL_REST, true)
-			await _drag(CarePlay.FOOD_BAG)
+			var touch := scoop > 0
+			await _care_drag_input(CarePlay.TOOL_REST, touch, true)
+			await _care_drag_input(CarePlay.FOOD_BAG, touch)
 			await create_timer(CarePlay.SCOOP_TIME + 0.12).timeout
 			_check(play.scoop_fill == 1.0, "停在粮袋中把勺子舀满")
-			await _drag(CarePlay.FOOD_BOWL)
-			_check(play.food_served == scoop and play.grain_pour_left == 0.0, "勺子到碗上等松手才倒")
-			await _mouse(CarePlay.FOOD_BOWL, false)
+			await _care_drag_input(CarePlay.FOOD_BOWL, touch)
+			await create_timer(0.18).timeout
+			_check(play.food_served == scoop and play.grain_pour_left == 0.0 and play.dragging, "满勺到食盆后等松手才倒粮")
+			await _care_drag_input(CarePlay.FOOD_BOWL, touch, false)
+			_check(play.grain_pour_left > 0.0, "松手后开始倒粮")
 			if scoop == 0:
 				await create_timer(0.18).timeout
 				await _care_snapshot(kind, "pour")
@@ -217,9 +244,12 @@ func _play_care(kind: int) -> void:
 			_check(play.food_served == scoop + 1, "倒完一勺后，碗里的粮食增加")
 	elif kind == 1:
 		var original_until: int = game.care.water_until
-		await _mouse(CarePlay.CAP_HOME, true)
-		await _drag(CarePlay.CAP_HOME - Vector2(0, 75))
-		await _mouse(CarePlay.CAP_HOME - Vector2(0, 75), false)
+		await _care_drag_input(CarePlay.CAP_HOME, true, true)
+		await _care_drag_input(CarePlay.CAP_HOME - Vector2(0, 75), true)
+		_check(play.phase == CarePlay.WaterStep.OPEN, "瓶盖没到右边的圈时继续拖动")
+		await _care_drag_input(CarePlay.CAP_REST, true)
+		_check(play.phase == CarePlay.WaterStep.POUR, "瓶盖拖到右边的圈即打开")
+		await _care_drag_input(CarePlay.CAP_REST, true, false)
 		await create_timer(CarePlay.DRAIN_TIME + 0.12).timeout
 		_check(play.water_level() == 0.0, "倒掉旧水后从空瓶开始")
 		await _mouse(CarePlay.TOOL_REST, true)
@@ -246,23 +276,23 @@ func _play_care(kind: int) -> void:
 				root.size = Vector2i(1024, 768)
 				await process_frame
 				await process_frame
-			await _bedding_input(CarePlay.TOOL_REST, touch, true)
+			await _care_drag_input(CarePlay.TOOL_REST, touch, true)
 			for row in range(CarePlay.BEDDING_ROWS):
 				var y := 248.5 + row * 61.0
 				var from := Vector2(382 if row % 2 == 0 else 837, y)
 				var to := Vector2(837 if row % 2 == 0 else 382, y)
-				await _bedding_input(from, touch)
-				await _bedding_input(to, touch)
+				await _care_drag_input(from, touch)
+				await _care_drag_input(to, touch)
 				if row == 1:
 					_check(play.covered.size() >= 14, "两次长划扫过路径上的木屑")
 					await _care_snapshot(kind, "sweep-%d" % phase)
-			await _bedding_input(Vector2(382, 431.5), touch, false)
+			await _care_drag_input(Vector2(382, 431.5), touch, false)
 		_check(play.done_delay >= 0.0, "扫净后铺上新木屑才完成")
 		root.size = Vector2i(1024, 640)
 	await create_timer(0.8).timeout
 	_check(not is_instance_valid(game.care_play), "完成照料小游戏 %d" % kind)
 
-func _bedding_input(at: Vector2, touch: bool, pressed: Variant = null) -> void:
+func _care_drag_input(at: Vector2, touch: bool, pressed: Variant = null) -> void:
 	if not touch:
 		if pressed == null:
 			await _drag(at)

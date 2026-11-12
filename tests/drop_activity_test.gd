@@ -3,6 +3,7 @@ extends SceneTree
 const Cage = preload("res://cage.tscn")
 const Habitat = preload("res://habitat.gd")
 const Care = preload("res://care.gd")
+const Motion = preload("res://cage_motion.gd")
 var game: Control
 var failures := 0
 
@@ -36,6 +37,8 @@ func _run() -> void:
 		_release(target, use_touch)
 		_check(game.held < 0 and game.actors[0].state == "走", "松手后安排路线 " + task)
 		var landed: Vector2 = game.actors[0].pos
+		if task == "吃":
+			_check(landed.distance_to(Habitat.BOWL) >= Motion.bowl_clearance(0, game.care.growth_scale(0)) - 0.001, "捏到碗上也落在碗外")
 		game._process(0.05)
 		_check(game.actors[0].pos.is_equal_approx(landed), "先落地再走 " + task)
 		for frame in range(300):
@@ -65,6 +68,7 @@ func _run() -> void:
 	_drag_to(fixtures[4][0])
 	game._cancel_gestures()
 	_check(game.held < 0 and game.wheel_owner < 0 and game.actors[0].state == "回应", "打断手势不会安排动作")
+	await _check_bowl_paths()
 	for suffix in ["", ".bak", ".tmp", ".bak.tmp"]:
 		if FileAccess.file_exists(game.care.path + suffix):
 			DirAccess.remove_absolute(game.care.path + suffix)
@@ -72,6 +76,44 @@ func _run() -> void:
 	await process_frame
 	print("拖放行为测试完成，失败项：", failures)
 	quit(0 if failures == 0 else 1)
+
+func _check_bowl_paths() -> void:
+	for fixture in [[0, Care.WEAN_AGE], [0, Care.ADULT_AGE], [1, Care.ADULT_AGE]]:
+		_reset_actors()
+		var index: int = fixture[0]
+		game.care.pets[index].born_at = game.care.now - fixture[1]
+		var actor: Dictionary = game.actors[index]
+		var other: Dictionary = game.actors[1 - index]
+		actor.pos = Habitat.CUBBIES[0] + Vector2(0, 0.42)
+		other.pos = Vector2(2.7, 3.8)
+		game._process(0.05)
+		var clearance := Motion.bowl_clearance(index, game.care.growth_scale(index))
+		# 左窝出口到前方过道的直线穿过碗，验证整条绕行路线和实际位置。
+		game._travel(actor, Vector2(-3.7, 3.2), "嗅")
+		var walk_gap := _advance_to(actor, "嗅")
+		_check(actor.state == "嗅" and walk_gap >= clearance - 0.001, "从左窝旁走到前方全程避开食盆")
+		game._start_activity(index, "吃", -1)
+		var eating_gap := _advance_to(actor, "吃")
+		_check(actor.state == "吃" and eating_gap >= clearance - 0.001, "到碗沿吃粮时身体一直在碗外")
+		for frame in range(45):
+			game._process(0.05)
+		var nose: Vector3 = game.habitat.noses[index].global_position
+		var nose_distance := Vector2(nose.x, nose.z).distance_to(Habitat.BOWL)
+		_check(absf(nose_distance - Habitat.BOWL_RADIUS) < 0.18 and nose.y > Habitat.BOWL_RIM_HEIGHT, "进食时只把嘴伸到碗沿上方")
+		if index == 1 and DisplayServer.get_name() != "headless":
+			await process_frame
+			await RenderingServer.frame_post_draw
+			_check(root.get_texture().get_image().save_png("res://dist/hamster-bowl-clearance.png") == OK, "保存碗沿吃粮的效果")
+
+func _advance_to(actor: Dictionary, state: String) -> float:
+	var smallest := INF
+	for frame in range(550):
+		game._process(0.05)
+		var position: Vector2 = actor.pos
+		smallest = minf(smallest, position.distance_to(Habitat.BOWL))
+		if actor.state == state:
+			break
+	return smallest
 
 func _reset_actors() -> void:
 	game.wheel_owner = -1

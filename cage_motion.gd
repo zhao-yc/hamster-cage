@@ -1,24 +1,62 @@
 extends RefCounted
 
+const Habitat = preload("res://habitat.gd")
 const RADII := [0.88, 0.79]
 const ADULT_SPACING := 1.67
+const ADULT_BOWL_CLEARANCE := Habitat.BOWL_RADIUS + 0.53 * Habitat.ADULT_SIZE[0]
 
 static func spacing(actors: Array) -> float:
 	return RADII[0] * float(actors[0].get("size_ratio", 1.0)) + RADII[1] * float(actors[1].get("size_ratio", 1.0))
 
-static func safe_floor(point: Vector2) -> Vector2:
-	var p := point.clamp(Vector2(-4.6, 0.65), Vector2(4.6, 4.15))
-	var bowl := Vector2(-2.90, 0.75)
-	if p.distance_to(bowl) < 1.50:
-		var direction := (p - bowl).normalized()
-		if direction.length_squared() < 0.01:
-			direction = Vector2.DOWN
-		p = bowl + direction * 1.50
-	return p.clamp(Vector2(-4.6, 0.65), Vector2(4.6, 4.15))
+static func bowl_clearance(index: int, size_ratio: float) -> float:
+	# 身体转向时，最长的一侧也要留在陶碗外。
+	return Habitat.BOWL_RADIUS + 0.53 * Habitat.ADULT_SIZE[index] * size_ratio
 
-static func drop(point: Vector2, other: Vector2, other_alive: bool, at_entrance: bool = false, clearance: float = 1.75) -> Vector2:
+static func outside_bowl(point: Vector2, clearance: float) -> Vector2:
+	var offset := point - Habitat.BOWL
+	if offset.length_squared() >= clearance * clearance:
+		return point
+	var outward := offset.normalized() if offset.length_squared() > 0.000001 else Vector2.DOWN
+	return Habitat.BOWL + outward * clearance
+
+static func bowl_route(start: Vector2, waypoints: Array, clearance: float) -> Array[Vector2]:
+	var route: Array[Vector2] = []
+	var from := outside_bowl(start, clearance)
+	for waypoint: Vector2 in waypoints:
+		var to := outside_bowl(waypoint, clearance + 0.035)
+		var nearest := Geometry2D.get_closest_point_to_segment(Habitat.BOWL, from, to)
+		if nearest.distance_to(Habitat.BOWL) < clearance - 0.001:
+			# 沿较短一侧绕行，给弧线之间的直线路段留出余量。
+			var start_angle := (from - Habitat.BOWL).angle()
+			var turn := angle_difference(start_angle, (to - Habitat.BOWL).angle())
+			var steps := maxi(1, ceili(absf(turn) / (PI * 0.25)))
+			for step in range(steps + 1):
+				var angle := start_angle + turn * float(step) / steps
+				route.append(Habitat.BOWL + Vector2.from_angle(angle) * (clearance + 0.20))
+		route.append(to)
+		from = to
+	return route
+
+static func constrain_bowl(actor: Dictionary) -> void:
+	var position: Vector2 = actor.pos
+	var safe := outside_bowl(position, float(actor.get("bowl_clearance", ADULT_BOWL_CLEARANCE)))
+	if position.is_equal_approx(safe):
+		return
+	actor.pos = safe
+	var outward := (safe - Habitat.BOWL).normalized()
+	var velocity: Vector2 = actor.velocity
+	actor.velocity -= outward * minf(0.0, velocity.dot(outward))
+
+static func safe_floor(point: Vector2, bowl_margin: float) -> Vector2:
+	var p := point.clamp(Vector2(-4.6, 0.65), Vector2(4.6, 4.15))
+	if p.distance_to(Habitat.BOWL) < bowl_margin:
+		p.y = maxf(p.y, Habitat.BOWL.y)
+		p = outside_bowl(p, bowl_margin)
+	return p
+
+static func drop(point: Vector2, other: Vector2, other_alive: bool, at_entrance: bool, clearance: float, bowl_margin: float) -> Vector2:
 	# 设施入口有预设落点，空地才使用笼子前方的范围限制。
-	var candidate := point if at_entrance else safe_floor(point)
+	var candidate := outside_bowl(point, bowl_margin) if at_entrance else safe_floor(point, bowl_margin)
 	if not other_alive or candidate.distance_to(other) >= clearance:
 		return candidate
 	var best := Vector2(0, 3.2)
@@ -26,7 +64,7 @@ static func drop(point: Vector2, other: Vector2, other_alive: bool, at_entrance:
 	# 在可行走地面寻找最近空位，不能把抱起的仓鼠放入食盆、滚轮或同伴身体。
 	for row in range(15):
 		for col in range(31):
-			var p := safe_floor(Vector2(-4.5 + col * 0.3, 0.65 + row * 0.25))
+			var p := safe_floor(Vector2(-4.5 + col * 0.3, 0.65 + row * 0.25), bowl_margin)
 			if p.distance_to(other) < clearance:
 				continue
 			if p.distance_squared_to(point) < distance:
@@ -86,9 +124,9 @@ static func separate(actors: Array, alive: Array, held: int) -> void:
 		return
 	var direction := offset / distance if distance > 0.001 else Vector2.RIGHT
 	var shift := direction * (minimum - distance + 0.002)
-	if actors[0].state in ["跑", "睡"]:
+	if actors[0].state in ["跑", "睡", "吃"]:
 		actors[1].pos += shift
-	elif actors[1].state in ["跑", "睡"]:
+	elif actors[1].state in ["跑", "睡", "吃"]:
 		actors[0].pos -= shift
 	else:
 		actors[0].pos -= shift * 0.5

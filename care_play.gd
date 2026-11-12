@@ -128,7 +128,7 @@ func _drag(at: Vector2) -> void:
 		return
 	var before := tool
 	tool = (at + offset).clamp(Vector2(86, 144), Vector2(925, 506))
-	if kind == WATER and phase == WaterStep.OPEN and tool.y < 184:
+	if kind == WATER and phase == WaterStep.OPEN and tool.distance_to(CAP_REST) <= 48.0:
 		phase = WaterStep.POUR
 		drain_left = DRAIN_TIME if initial_water_fill > 0.0 else 0.0
 		_cancel_drag()
@@ -257,7 +257,7 @@ func _hint() -> String:
 		WATER:
 			match phase:
 				WaterStep.OPEN:
-					return "把瓶盖往上提，倒掉旧水。" if initial_water_fill > 0.0 else "把瓶盖往上提，打开水壶。"
+					return "把瓶盖拖到右边的圈里，倒掉旧水。" if initial_water_fill > 0.0 else "把瓶盖拖到右边的圈里。"
 				WaterStep.POUR:
 					return "拖水壶到瓶口，按住倒水。" if drain_left <= 0.0 else "等旧水流完，再倒入干净的水。"
 				WaterStep.CLOSE:
@@ -367,8 +367,12 @@ func _draw_water() -> void:
 	_pill(Rect2(-42, -107, 84, 17), Color("#8fac9d"), 8)
 	_at()
 	if drain_left > 0.0:
+		_ellipse(Vector2(513, 480), Vector2(61, 16), Color("#c8b691"))
+		_ellipse(Vector2(513, 476), Vector2(54, 13), Color("#ebd8b3"))
+		if drain_left < DRAIN_TIME:
+			_ellipse(Vector2(513, 476), Vector2(46 * (1.0 - drain_left / DRAIN_TIME), 9), Color("#a4b3a1"))
 		var outlet := bottle + Vector2(-41, -98).rotated(tilt)
-		_stream(outlet, Vector2(738, 493), drain_left / DRAIN_TIME, Color("#a0b4a2"))
+		_stream(outlet, Vector2(513, 476), drain_left / DRAIN_TIME, Color("#a0b4a2"))
 	if phase == WaterStep.POUR:
 		_draw_cap(CAP_REST)
 		if drain_left <= 0.0 and stream_strength <= 0.0:
@@ -380,7 +384,7 @@ func _draw_water() -> void:
 		_at()
 	else:
 		if done_delay < 0.0:
-			_guide(tool, Vector2(CAP_HOME.x, 171) if phase == WaterStep.OPEN else CAP_HOME, not dragging)
+			_guide(tool, CAP_REST if phase == WaterStep.OPEN else CAP_HOME, not dragging)
 		_draw_cap(tool)
 
 func _draw_bedding() -> void:
