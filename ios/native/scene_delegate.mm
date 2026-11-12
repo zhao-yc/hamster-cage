@@ -25,6 +25,39 @@
 
 - (void)sceneDidBecomeActive:(UIScene *)scene {
 	[self attachGodotWindow];
+	[self forwardGodotLifecycle:@selector(applicationDidBecomeActive:)];
+}
+
+- (void)sceneWillResignActive:(UIScene *)scene {
+	[self forwardGodotLifecycle:@selector(applicationWillResignActive:)];
+}
+
+- (void)sceneDidEnterBackground:(UIScene *)scene {
+	[self forwardGodotLifecycle:@selector(applicationDidEnterBackground:)];
+}
+
+- (void)sceneWillEnterForeground:(UIScene *)scene {
+	[self forwardGodotLifecycle:@selector(applicationWillEnterForeground:)];
+}
+
+- (void)forwardGodotLifecycle:(SEL)selector {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		for (id candidate in GDTApplicationDelegate.services) {
+			if ([candidate isKindOfClass:[GDTAppDelegateService class]] && [candidate respondsToSelector:selector]) {
+				GDTAppDelegateService *service = (GDTAppDelegateService *)candidate;
+				if (selector == @selector(applicationDidBecomeActive:)) {
+					[service applicationDidBecomeActive:UIApplication.sharedApplication];
+				} else if (selector == @selector(applicationWillResignActive:)) {
+					[service applicationWillResignActive:UIApplication.sharedApplication];
+				} else if (selector == @selector(applicationDidEnterBackground:)) {
+					[service applicationDidEnterBackground:UIApplication.sharedApplication];
+				} else if (selector == @selector(applicationWillEnterForeground:)) {
+					[service applicationWillEnterForeground:UIApplication.sharedApplication];
+				}
+				break;
+			}
+		}
+	});
 }
 
 - (void)attachGodotWindow {
@@ -51,9 +84,6 @@
 			}
 			self.window.rootViewController = viewController;
 			[self.window makeKeyAndVisible];
-			 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-				[self attachGodotWindow];
-			});
 		}
 	});
 }
