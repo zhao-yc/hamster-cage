@@ -6,8 +6,10 @@ const Habitat = preload("res://habitat.gd")
 const Motion = preload("res://cage_motion.gd")
 const CarePlay = preload("res://care_play.gd")
 const Rhythm = preload("res://hamster_rhythm.gd")
+const PetVoice = preload("res://pet_voice.gd")
 const DESIGN := Vector2(1024, 640)
 const ACTIONS := ["添粮", "加水", "换垫料"]
+const CARE_VOICES := [PetVoice.Cue.FOOD, PetVoice.Cue.WATER, PetVoice.Cue.BEDDING]
 const CARE_BUTTON_SIZE := Vector2(128, 52)
 const CARE_BUTTON_GAP := 14.0
 const CAPTION_HEIGHT := 35.0
@@ -49,6 +51,7 @@ var parent_hold := -1.0
 var ar: Object
 var ar_pending := false
 var care_play: Control
+var next_care_speaker := 0
 var touches: Dictionary = {}
 var touch_consumed := false
 var held := -1
@@ -268,7 +271,10 @@ func _show_settings() -> void:
 	_dialog_button("声音开" if care.sound else "声音关", func() -> void:
 		care.sound = not care.sound
 		_save()
-		_chime(1)
+		if care.sound:
+			_chime(1)
+		else:
+			audio.stop()
 		_show_settings()
 	)
 	_dialog_button("仓鼠相册", _show_album)
@@ -297,7 +303,7 @@ func _adopt(index: int) -> void:
 	if care.adopt(index):
 		actors[index] = _actor(-0.7 if index == 0 else 1.55, 0.5)
 		_save()
-		_feedback("新的%s到家啦。" % Care.NAMES[index], 2)
+		_pet_feedback(index, PetVoice.Cue.GREET)
 	_close_dialog()
 
 func _close_dialog() -> void:
@@ -344,7 +350,13 @@ func _finish_care(index: int) -> void:
 		tutorial += 1
 		care.tutorial_seen = tutorial == ACTIONS.size()
 	_save()
-	_feedback(["食盆装满了！", "水壶装满了！", "垫料变干净啦！"][index], index)
+	# 照料结果由一只在笼里的宠物回应。两只都在时轮流说，避免同时播放。
+	var speaker := next_care_speaker if care.alive(next_care_speaker) else 1 - next_care_speaker
+	if care.alive(speaker):
+		_pet_feedback(speaker, CARE_VOICES[index])
+		next_care_speaker = 1 - speaker
+	else:
+		_feedback(["食盆装满了！", "水壶装满了！", "垫料变干净啦！"][index], index)
 
 func _wall() -> int:
 	var wall := int(Time.get_unix_time_from_system())
@@ -379,6 +391,7 @@ func _save() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED and is_instance_valid(modal):
+		audio.stop()
 		_cancel_gestures()
 		_cancel_care()
 		parent_hold = -1
@@ -402,6 +415,7 @@ func _open_ar() -> void:
 		_feedback("有仓鼠住进来后，就能到桌上玩。", 0)
 		return
 	_save()
+	audio.stop()
 	ar_pending = ar.open(care.alive(0), care.alive(1))
 	if not ar_pending:
 		_feedback("现在打不开相机，可以继续在笼子里玩。", 0)
@@ -630,7 +644,7 @@ func _respond_at(point: Vector2) -> void:
 			if actor.state == "打架":
 				return
 			if actor.state == "跑":
-				_feedback("%s正在跑滚轮！" % Care.NAMES[index], index)
+				_pet_feedback(index, PetVoice.Cue.WHEEL)
 			else:
 				if wheel_owner == index:
 					wheel_owner = -1
@@ -639,12 +653,11 @@ func _respond_at(point: Vector2) -> void:
 				actor.velocity = Vector2.ZERO
 				actor.left = 1.5
 				actor.awake_until = care.now + 60
-				var greeting := "%s看到你啦！" % Care.NAMES[index]
+				_pet_feedback(index, PetVoice.Cue.GREET)
 				if care.growth_scale(index) < 1.0:
-					greeting += "它已经 %d 日龄啦。" % care.age_days(index)
+					notice += "它已经 %d 日龄啦。" % care.age_days(index)
 				elif care.senior(index) > 0.0:
-					greeting += "它年纪大了，动作慢些。"
-				_feedback(greeting, index)
+					notice += "它年纪大了，动作慢些。"
 			return
 
 func _reserved(index: int, task: String) -> bool:
@@ -777,7 +790,7 @@ func _lift_at(point: Vector2) -> void:
 			actors[index].facing = 0.38 if actors[index].pos.x < 0 else -0.38
 			actors[index].velocity = Vector2.ZERO
 			actors[index].route.clear()
-			_feedback("轻轻抱着%s，移动后松开放下。" % Care.NAMES[index], index)
+			_pet_feedback(index, PetVoice.Cue.LIFT)
 			return
 
 func _drag_held(point: Vector2) -> void:
@@ -805,7 +818,10 @@ func _drop_held(allow_activity: bool = true) -> void:
 	actor.awake_until = care.now + 60
 	notice_left = 0.0
 	social_cooldown = 100.0
-	if target.is_empty() or not care.alive(index):
+	if not allow_activity or not care.alive(index):
+		return
+	if target.is_empty():
+		_pet_feedback(index, PetVoice.Cue.DROP)
 		return
 	var nest: int = target.get("nest", -1)
 	var problem := _activity_problem(index, target.task, nest)
@@ -870,6 +886,16 @@ func _feedback(value: String, index: int) -> void:
 	notice = value
 	notice_left = 2.2
 	_chime(index)
+
+func _pet_feedback(index: int, cue: PetVoice.Cue) -> void:
+	var line: Array = PetVoice.LINES[index][cue]
+	var clip: AudioStream = line[1]
+	notice = "%s · %s" % [Care.NAMES[index], line[0]]
+	notice_left = maxf(2.2, clip.get_length() + 0.2)
+	# 连点同一只时让当前句播完。新动作共用同一个播放器，避免两句重叠。
+	if care.sound and (not audio.playing or audio.stream != clip):
+		audio.stream = clip
+		audio.play()
 
 func _chime(index: int) -> void:
 	if not care.sound or not is_instance_valid(audio):

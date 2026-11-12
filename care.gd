@@ -14,8 +14,9 @@ const BEDDING_TIME := 48 * HOUR
 const WATER_DURATION := DAY
 const LEGACY_WATER := [24 * HOUR, 30 * HOUR]
 const FOOD := [36 * HOUR, 42 * HOUR]
-const NAMES := ["灰灰", "白白"]
+const NAMES := ["肥嘟嘟", "好可爱"]
 const VERSION := 3
+const SAVE_PATH := "user://hamsters.json"
 
 var path: String
 var now := 0
@@ -27,13 +28,27 @@ var tutorial_seen := false
 var sound := true
 var droppings: Array = []
 
-func _init(save_path: String = "user://hamsters.json") -> void:
+func _init(save_path: String = SAVE_PATH) -> void:
 	path = save_path
 
 func load_or_start(wall_time: int) -> bool:
+	if _load_save(path):
+		return true
+	if path == SAVE_PATH and OS.has_feature("pc"):
+		# 桌面端的默认用户目录随项目名变更。读到旧进度后，下次保存写入新目录。
+		var parent := ProjectSettings.globalize_path("user://").trim_suffix("/").get_base_dir()
+		if _load_save(parent.path_join("灰灰和白白/hamsters.json")):
+			return true
+	now = wall_time
+	bedding_at = now
+	water_until = now + WATER_DURATION
+	pets = [_new_pet(0), _new_pet(1)]
+	return false
+
+func _load_save(save_path: String) -> bool:
 	# 临时档已写完、主档还没替换时，也能找回刚刚完成的照料。
 	for suffix in [".tmp", "", ".bak"]:
-		var candidate: String = path + suffix
+		var candidate: String = save_path + suffix
 		if not FileAccess.file_exists(candidate):
 			continue
 		var data: Variant = _read(candidate)
@@ -52,10 +67,6 @@ func load_or_start(wall_time: int) -> bool:
 			else:
 				water_until = int(data.water_until)
 			return true
-	now = wall_time
-	bedding_at = now
-	water_until = now + WATER_DURATION
-	pets = [_new_pet(0), _new_pet(1)]
 	return false
 
 func _read(candidate: String) -> Variant:

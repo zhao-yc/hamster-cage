@@ -1,7 +1,7 @@
 config_version=5
 
 [application]
-config/name="灰灰和白白"
+config/name="肥嘟嘟和好可爱"
 run/main_scene="res://cage.tscn"
 config/icon="res://icon.svg"
 
