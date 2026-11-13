@@ -12,3 +12,5 @@
 /export_credentials.cfg
 /ios/plugins/*.a
 /ios/plugins/HamsterAR.gdip
+/ios/plugins/HamsterGray.usdz
+/ios/plugins/HamsterWhite.usdz

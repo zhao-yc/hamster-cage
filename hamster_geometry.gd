@@ -43,13 +43,13 @@ static func coat(unit: Vector3, index: int, head: bool) -> Color:
 	var mottling := sin(unit.x * 13.0 + sin(unit.z * 7.0)) * sin(unit.y * 11.0) * 0.012
 	return cream.lerp(back, mix_value).lightened(mottling)
 
-static func skin(radii: Vector3, index: int, head: bool) -> ArrayMesh:
+static func skin(radii: Vector3, index: int, head: bool, rows: int = 48, columns: int = 80) -> ArrayMesh:
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for row in range(48):
-		for col in range(80):
+	for row in range(rows):
+		for col in range(columns):
 			for offset in [Vector2i(0, 0), Vector2i(0, 1), Vector2i(1, 0), Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
-				var uv := Vector2(float(col + offset.x) / 80.0, float(row + offset.y) / 48.0)
+				var uv := Vector2(float(col + offset.x) / columns, float(row + offset.y) / rows)
 				var unit := Vector3(sin(uv.y * PI) * cos(uv.x * TAU), cos(uv.y * PI), sin(uv.y * PI) * sin(uv.x * TAU))
 				surface.set_uv(uv)
 				surface.set_color(coat(unit, index, head).darkened(0.025))

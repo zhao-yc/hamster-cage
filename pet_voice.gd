@@ -2,6 +2,24 @@ extends RefCounted
 
 enum Cue { GREET, WHEEL, LIFT, DROP, FOOD, WATER, BEDDING }
 
+# 点击仓鼠时从这组台词里随机选，首条保留原来的问候，避免升级后失去熟悉的声音。
+const GREET_LINES := [
+	[
+		["川川，我是肥嘟嘟！", preload("res://assets/voices/huihui-greet.wav")],
+		["川川，来看我呀！", preload("res://assets/voices/huihui-greet-2.wav")],
+		["嘿，今天也要陪我玩吗？", preload("res://assets/voices/huihui-greet-3.wav")],
+		["川川，我在这里等你呢！", preload("res://assets/voices/huihui-greet-4.wav")],
+		["你好呀，我刚刚闻到你的味道啦！", preload("res://assets/voices/huihui-greet-5.wav")],
+	],
+	[
+		["川川，你好呀，我是好可爱！", preload("res://assets/voices/baibai-greet.wav")],
+		["川川，快来看看我呀！", preload("res://assets/voices/baibai-greet-2.wav")],
+		["今天也要陪我玩一会儿吗？", preload("res://assets/voices/baibai-greet-3.wav")],
+		["我在这里呢，川川！", preload("res://assets/voices/baibai-greet-4.wav")],
+		["你好呀，我刚刚想起你啦！", preload("res://assets/voices/baibai-greet-5.wav")],
+	],
+]
+
 # 顺序对应 Care.NAMES。把台词和音频放在一起，字幕与配音同步更新。
 const LINES := [
 	{

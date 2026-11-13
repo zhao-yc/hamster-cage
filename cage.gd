@@ -7,6 +7,9 @@ const Motion = preload("res://cage_motion.gd")
 const CarePlay = preload("res://care_play.gd")
 const Rhythm = preload("res://hamster_rhythm.gd")
 const PetVoice = preload("res://pet_voice.gd")
+const EATING_SFX: AudioStream = preload("res://assets/voices/eating-crunch.mp3")
+const DRINKING_SFX: AudioStream = preload("res://assets/voices/drinking-water.mp3")
+const WHEEL_SFX: AudioStream = preload("res://assets/voices/wheel-spin-source.mp3")
 const DESIGN := Vector2(1024, 640)
 const ACTIONS := ["添粮", "加水", "换垫料"]
 const CARE_VOICES := [PetVoice.Cue.FOOD, PetVoice.Cue.WATER, PetVoice.Cue.BEDDING]
@@ -31,6 +34,10 @@ var gear: Button
 var caption_y := 0.0
 var ui_font: Font
 var audio: AudioStreamPlayer
+var activity_audio: AudioStreamPlayer
+var wheel_audio: AudioStreamPlayer
+var activity_actor := -1
+var activity_kind := ""
 var modal: ColorRect
 var modal_content: VBoxContainer
 var settings_age_label: Label
@@ -65,6 +72,7 @@ var social_kind := SocialKind.CHASE
 var social_center := Vector2.ZERO
 var social_angle := 0.0
 var last_steps := [-1, -1]
+var last_greet_variants := [-1, -1]
 
 func _ready() -> void:
 	rng.randomize()
@@ -112,6 +120,15 @@ func _ready() -> void:
 
 	audio = AudioStreamPlayer.new()
 	add_child(audio)
+	activity_audio = AudioStreamPlayer.new()
+	activity_audio.volume_db = -11.0
+	add_child(activity_audio)
+	wheel_audio = AudioStreamPlayer.new()
+	wheel_audio.volume_db = -18.0
+	var wheel_clip := WHEEL_SFX as AudioStreamMP3
+	if wheel_clip != null:
+		wheel_clip.loop = true
+	add_child(wheel_audio)
 	_make_modal()
 	_layout()
 	_refresh()
@@ -295,6 +312,8 @@ func _show_settings() -> void:
 			_chime(1)
 		else:
 			audio.stop()
+			_stop_activity_audio()
+			wheel_audio.stop()
 		_show_settings()
 	)
 	_dialog_button("仓鼠相册", _show_album)
@@ -430,6 +449,8 @@ func _save() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED and is_instance_valid(modal):
 		audio.stop()
+		_stop_activity_audio()
+		wheel_audio.stop()
 		_cancel_gestures()
 		_cancel_care()
 		parent_hold = -1
@@ -454,6 +475,8 @@ func _open_ar() -> void:
 		return
 	_save()
 	audio.stop()
+	_stop_activity_audio()
+	wheel_audio.stop()
 	ar_pending = ar.open(care.alive(0), care.alive(1))
 	if not ar_pending:
 		_feedback("现在打不开相机，可以继续在笼子里玩。", 0)
@@ -466,6 +489,8 @@ func _process(delta: float) -> void:
 			_refresh()
 			if event == 2:
 				_feedback("相机未开启，可以继续在笼子里玩。", 0)
+			elif event == 3:
+				_feedback("仓鼠模型加载失败，可以继续在笼子里玩。", 0)
 	clock_left -= delta
 	if clock_left <= 0.0:
 		clock_left = 1.0
@@ -526,6 +551,8 @@ func _process(delta: float) -> void:
 	habitat.update_light(Rhythm.is_night(care.now, clock_offset), frame_delta)
 	habitat.tick_bedding(frame_delta)
 	wheel_speed = move_toward(wheel_speed, 5.6 if wheel_owner >= 0 and actors[wheel_owner].state == "跑" else 0.0, delta * 5.0)
+	_sync_wheel_audio()
+	_sync_activity_audio()
 	wheel_angle = fposmod(wheel_angle + wheel_speed * delta, TAU)
 	habitat.update_supplies(wheel_angle, _food_fill(), care.water_fill(), _bedding_dirt())
 	stage.queue_redraw()
@@ -558,6 +585,8 @@ func _move_actor(index: int, delta: float) -> void:
 		if actor.state in ["吃", "喝", "跑"]:
 			care.record_visit(index, actor.state)
 			_save()
+		if actor.state in ["吃", "喝"]:
+			_start_activity_audio(index, actor.state)
 		if actor.state == "吃":
 			actor.left = rng.randf_range(12.0, 24.0)
 		elif actor.state == "喝":
@@ -933,7 +962,17 @@ func _feedback(value: String, index: int) -> void:
 	_chime(index)
 
 func _pet_feedback(index: int, cue: PetVoice.Cue) -> void:
-	var line: Array = PetVoice.LINES[index][cue]
+	var line: Array
+	if cue == PetVoice.Cue.GREET:
+		var variants: Array = PetVoice.GREET_LINES[index]
+		var variant := rng.randi_range(0, variants.size() - 1)
+		# 连续点击同一只时避免立刻重复，仍保持每次从五条里随机选择。
+		if variants.size() > 1 and variant == last_greet_variants[index]:
+			variant = (variant + 1) % variants.size()
+		last_greet_variants[index] = variant
+		line = variants[variant]
+	else:
+		line = PetVoice.LINES[index][cue]
 	var clip: AudioStream = line[1]
 	notice = "%s · %s" % [Care.NAMES[index], line[0]]
 	notice_left = maxf(2.2, clip.get_length() + 0.2)
@@ -941,6 +980,42 @@ func _pet_feedback(index: int, cue: PetVoice.Cue) -> void:
 	if care.sound and (not audio.playing or audio.stream != clip):
 		audio.stream = clip
 		audio.play()
+
+func _start_activity_audio(index: int, kind: String) -> void:
+	if not care.sound or not is_instance_valid(activity_audio):
+		return
+	# 吃东西需要短咀嚼声循环，喝水只播放一段完整的吞咽声，避免尾部叹气被重复截断。
+	activity_actor = index
+	activity_kind = kind
+	var clip: AudioStream = EATING_SFX if kind == "吃" else DRINKING_SFX
+	var mp3 := clip as AudioStreamMP3
+	if mp3 != null:
+		mp3.loop = kind == "吃"
+	activity_audio.stream = clip
+	activity_audio.play()
+
+func _stop_activity_audio() -> void:
+	if is_instance_valid(activity_audio):
+		activity_audio.stop()
+	activity_audio.stream = null
+	activity_actor = -1
+	activity_kind = ""
+
+func _sync_activity_audio() -> void:
+	if not care.sound:
+		_stop_activity_audio()
+		return
+	if activity_actor < 0 or not care.alive(activity_actor) or actors[activity_actor].state != activity_kind:
+		_stop_activity_audio()
+
+func _sync_wheel_audio() -> void:
+	var running: bool = care.sound and wheel_owner >= 0 and care.alive(wheel_owner) and actors[wheel_owner].state == "跑"
+	if running:
+		if not wheel_audio.playing:
+			wheel_audio.stream = WHEEL_SFX
+			wheel_audio.play()
+	else:
+		wheel_audio.stop()
 
 func _chime(index: int) -> void:
 	if not care.sound or not is_instance_valid(audio):

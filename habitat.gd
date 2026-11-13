@@ -404,21 +404,22 @@ func _supplies() -> void:
 	_cylinder(Vector3(0, -0.463, 0), 0.029, 0.004, _material(Color("#373732")), nozzle)
 	_ellipsoid(Vector3(0, -0.47, 0), Vector3.ONE * 0.018, metal, nozzle)
 
-func _pet(index: int) -> void:
+func _pet(index: int, for_ar: bool = false) -> void:
 	var root := _node(Vector3.ZERO, self)
 	pets.append(root)
 	poses.append({"ready": false, "ground": 0.0, "stride": 0.0, "sleep": 0.0, "fight": 0.0, "held": 0.0,
 		"head_y": 0.325, "head_pitch": 0.0, "crouch": 0.0})
-	_contact(Vector3(0, 0.065, -0.06), Vector2(1.5, 1.7), root)
+	if not for_ar:
+		_contact(Vector3(0, 0.065, -0.06), Vector2(1.5, 1.7), root)
 	var ear_fur := _material(Color("#a49682") if index == 0 else Color("#d7cabc"))
 	var pink := _material(Color("#bd9687"), 0.57)
 	var eyes := _material(Color("#100d0b"), 0.055)
 	var shine := _material(Color("#fff6df"), 0.12)
-	_furred_part(BODY_CENTER, BODY_RADII, 6500, index, false, root)
+	_furred_part(BODY_CENTER, BODY_RADII, 6500, index, false, root, for_ar)
 	var head := _node(Vector3(0, 0.325, 0.235), root)
 	heads.append(head)
 	var head_radii := Vector3(0.245, 0.225, 0.245)
-	_furred_part(Vector3.ZERO, head_radii, 5200, index, true, head)
+	_furred_part(Vector3.ZERO, head_radii, 5200, index, true, head, for_ar)
 	var paws: Array[Node3D] = []
 	var legs: Array[Node3D] = []
 	var pair: Array[Node3D] = []
@@ -464,7 +465,7 @@ func _pet(index: int) -> void:
 				_ellipsoid(toe_position + Vector3(0, 0.002, 0.023), Vector3(0.0035, 0.0035, 0.006), nail, paw)
 			paws.append(paw)
 			var leg := _node(Vector3.ZERO, root)
-			_furred_part(Vector3.ZERO, Vector3(0.024, 0.10, 0.026), 650, index + 2, false, leg)
+			_furred_part(Vector3.ZERO, Vector3(0.024, 0.10, 0.026), 650, index + 2, false, leg, for_ar)
 			legs.append(leg)
 		_mesh(Hamster.curve(Vector3(0, -0.066, 0.257), Vector3(side * 0.010, -0.075, 0.253), Vector3(side * 0.021, -0.075, 0.248), Vector3(side * 0.028, -0.068, 0.242), 0.0018, 0.0008), Vector3.ZERO, mouth, head)
 	feet.append(paws)
@@ -518,10 +519,11 @@ func show_grip(index: int, delta: float) -> void:
 	grip_fingers[0].rotation.z = -0.37 * (1.0 - closed)
 	grip_fingers[1].rotation.z = 0.31 * (1.0 - closed)
 
-func _furred_part(center: Vector3, radii: Vector3, count: int, index: int, is_head: bool, host: Node3D) -> void:
+func _furred_part(center: Vector3, radii: Vector3, count: int, index: int, is_head: bool, host: Node3D, for_ar: bool) -> void:
 	var base := ShaderMaterial.new()
 	base.shader = load("res://assets/hamster_undercoat.gdshader")
-	_mesh(Hamster.skin(radii, index, is_head), center, base, host)
+	var skin := Hamster.skin(radii, index, is_head, 24, 40) if for_ar else Hamster.skin(radii, index, is_head)
+	_mesh(skin, center, base, host)
 	var material := ShaderMaterial.new()
 	material.shader = load("res://assets/hamster_tufts.gdshader")
 	var patch := _mesh(Hamster.tufts(radii, count, index, is_head), center, material, host)
@@ -533,7 +535,11 @@ func _furred_part(center: Vector3, radii: Vector3, count: int, index: int, is_he
 		guard_material.vertex_color_is_srgb = true
 		guard_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		guard_material.metallic_specular = 0.10
-		_mesh(Hamster.tufts(radii, 1800 if is_head else 2400, index, is_head, true), center, guard_material, host).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var guard_count := 1800 if is_head else 2400
+		if for_ar:
+			@warning_ignore("integer_division")
+			guard_count /= 4
+		_mesh(Hamster.tufts(radii, guard_count, index, is_head, true), center, guard_material, host).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 60.0) -> void:
 	var pet := pets[index]
@@ -649,12 +655,18 @@ func show_pet(index: int, actor: Dictionary, alive: bool, delta: float = 1.0 / 6
 			planted_position.y = maxf(planted_position.y, Meshes.bedding_height(planted_position.x, planted_position.z) + 0.033)
 			paw.global_position = planted_position
 		paw.rotation.x = lerpf(paw.rotation.x, toe_angle, blend)
-		var attachment := Vector3(side * (0.145 if front else 0.205), 0.17 if front else 0.165, 0.18 if front else -0.27)
-		var wrist := paw.position + Vector3(0, 0.027, -0.016)
-		var limb: Node3D = limbs[index][offset]
-		limb.position = (attachment + wrist) * 0.5
-		limb.quaternion = Quaternion(Vector3.UP, (attachment - wrist).normalized())
-		limb.scale.y = (attachment - wrist).length() / 0.20 + 0.14
+		_position_limb(index, offset)
+
+# 笼内步态和 AR 资源的站姿共用腿部连接点。
+func _position_limb(index: int, offset: int) -> void:
+	var front := offset % 2 == 1
+	var side := -1.0 if offset < 2 else 1.0
+	var attachment := Vector3(side * (0.145 if front else 0.205), 0.17 if front else 0.165, 0.18 if front else -0.27)
+	var wrist: Vector3 = feet[index][offset].position + Vector3(0, 0.027, -0.016)
+	var limb: Node3D = limbs[index][offset]
+	limb.position = (attachment + wrist) * 0.5
+	limb.quaternion = Quaternion(Vector3.UP, (attachment - wrist).normalized())
+	limb.scale.y = (attachment - wrist).length() / 0.20 + 0.14
 
 func update_supplies(angle: float, food: float, fill: float, dirty: float) -> void:
 	wheel.rotation.z = angle

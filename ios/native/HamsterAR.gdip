@@ -6,6 +6,7 @@ deinitialization="hamster_ar_deinit"
 
 [dependencies]
 system=["UIKit.framework", "Foundation.framework", "AVFoundation.framework", "ARKit.framework", "RealityKit.framework", "QuartzCore.framework"]
+files=["HamsterGray.usdz", "HamsterWhite.usdz"]
 linker_flags=["-ObjC", "-L/usr/lib/swift", "-L$(TOOLCHAIN_DIR)/usr/lib/swift/iphoneos"]
 
 [plist]

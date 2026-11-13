@@ -1,10 +1,12 @@
 import ARKit
 import AVFoundation
+import OSLog
 import RealityKit
 import UIKit
 import simd
 
 private let bridge = HamsterARBridge()
+private let arLog = Logger(subsystem: "com.yinzon.hamstercage", category: "AR")
 
 @_cdecl("hamster_ar_supported")
 func hamsterARSupported() -> Int32 {
@@ -48,7 +50,7 @@ private final class HamsterARBridge {
         lock.unlock()
     }
 
-    func open(_ mask: Int32) {
+    @MainActor func open(_ mask: Int32) {
         generation += 1
         let ticket = generation
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -66,18 +68,27 @@ private final class HamsterARBridge {
         }
     }
 
-    private func present(_ mask: Int32) {
+    @MainActor private func present(_ mask: Int32) {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive || $0.activationState == .foregroundInactive }
-        let window = scene?.windows.first(where: \.isKeyWindow)
-            ?? UIApplication.shared.windows.first(where: \.isKeyWindow)
+        let window = scene?.keyWindow
         guard let host = window?.rootViewController,
               host.presentedViewController == nil else {
             publish(2)
             return
         }
-        let table = TableController(mask: mask)
+        let models: [(index: Int, entity: Entity)]
+        do {
+            models = try (0..<2).filter { mask & (Int32(1) << $0) != 0 }.map {
+                ($0, try TableHamster.load(index: $0))
+            }
+        } catch {
+            arLog.error("仓鼠模型加载失败：\(error.localizedDescription, privacy: .public)")
+            publish(3)
+            return
+        }
+        let table = TableController(models: models)
         controller = table
         table.modalPresentationStyle = .fullScreen
         table.onClose = { [weak self] result in
@@ -99,7 +110,7 @@ private final class HamsterARBridge {
 
 private final class TableController: UIViewController, ARSessionDelegate {
     var onClose: ((Int32) -> Void)?
-    private let mask: Int32
+    private let models: [(index: Int, entity: Entity)]
     private let camera = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
     private let hint = UILabel()
     private let reset = UIButton(type: .system)
@@ -116,8 +127,8 @@ private final class TableController: UIViewController, ARSessionDelegate {
     private var finishing = false
     private var tracking = false
 
-    init(mask: Int32) {
-        self.mask = mask
+    init(models: [(index: Int, entity: Entity)]) {
+        self.models = models
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -244,11 +255,13 @@ private final class TableController: UIViewController, ARSessionDelegate {
         }
         guard let placement = surface(point) else { return }
         let anchor = AnchorEntity(world: placement.worldTransform)
-        for index in 0..<2 where mask & (Int32(1) << index) != 0 {
-            let pet = TableHamster(index)
-            anchor.addChild(pet.root)
-            pets.append(pet)
+        let placedPets = models.compactMap { TableHamster(index: $0.index, template: $0.entity) }
+        guard placedPets.count == models.count else {
+            finish(3)
+            return
         }
+        for pet in placedPets { anchor.addChild(pet.root) }
+        pets = placedPets
         camera.scene.addAnchor(anchor)
         playground = anchor
         reticle.isEnabled = false
@@ -279,47 +292,46 @@ private final class TableController: UIViewController, ARSessionDelegate {
 @MainActor
 private final class TableHamster {
     let root = Entity()
-    private let head = Entity()
+    private let head: Entity
     private let index: Int
+    private let feet: [Entity]
+    private let headRest: Transform
+    private let footRest: [SIMD3<Float>]
     private var greeting = 0.0
-    private var feet: [ModelEntity] = []
-    private let pink = UIColor(red: 0.86, green: 0.60, blue: 0.59, alpha: 1)
 
-    init(_ index: Int) {
-        self.index = index
-        let fur = index == 0
-            ? UIColor(red: 0.62, green: 0.56, blue: 0.58, alpha: 1)
-            : UIColor(red: 1, green: 0.94, blue: 0.88, alpha: 1)
-        let cream = UIColor(red: 1, green: 0.93, blue: 0.83, alpha: 1)
-        root.position.x = index == 0 ? -0.09 : 0.09
-        root.addChild(sphere(fur, [0, 0.037, -0.012], [0.038, 0.034, 0.044]))
-        root.addChild(sphere(cream, [0, 0.029, 0.012], [0.032, 0.023, 0.034]))
-        root.addChild(sphere(fur, [0, 0.021, -0.056], [0.012, 0.009, 0.01]))
-        head.position = [0, 0.05, 0.024]
-        root.addChild(head)
-        head.addChild(sphere(fur, [0, 0, 0], [0.033, 0.028, 0.030]))
-        for side: Float in [-1, 1] {
-            head.addChild(sphere(fur, [side * 0.023, 0.023, 0], [0.012, 0.014, 0.007]))
-            head.addChild(sphere(pink, [side * 0.023, 0.023, 0.006], [0.008, 0.009, 0.003]))
-            head.addChild(sphere(.black, [side * 0.016, 0.005, 0.025], [0.004, 0.005, 0.004]))
-            head.addChild(sphere(.white, [side * 0.016 - 0.001, 0.006, 0.028], [0.0015, 0.0015, 0.0015]))
-            head.addChild(sphere(cream, [side * 0.010, -0.012, 0.025], [0.015, 0.010, 0.011]))
-            for z: Float in [-0.034, 0.025] {
-                let foot = sphere(pink, [side * 0.022, 0.006, z], [0.01, 0.006, 0.014])
-                root.addChild(foot)
-                feet.append(foot)
-            }
-        }
-        head.addChild(sphere(pink, [0, -0.007, 0.036], [0.006, 0.004, 0.003]))
-        root.generateCollisionShapes(recursive: true)
+    private enum ModelError: Error {
+        case missingAsset, missingParts
     }
 
-    private func sphere(_ color: UIColor, _ position: SIMD3<Float>, _ radii: SIMD3<Float>) -> ModelEntity {
-        let entity = ModelEntity(mesh: .generateSphere(radius: 1),
-            materials: [SimpleMaterial(color: color, isMetallic: false)])
-        entity.position = position
-        entity.scale = radii
-        return entity
+    static func load(index: Int) throws -> Entity {
+        let name = index == 0 ? "HamsterGray" : "HamsterWhite"
+        guard let url = Bundle.main.url(forResource: name, withExtension: "usdz") else {
+            throw ModelError.missingAsset
+        }
+        let model = try Entity.load(contentsOf: url)
+        guard model.findEntity(named: "Body") != nil, model.findEntity(named: "Head") != nil,
+              (0..<4).allSatisfy({ model.findEntity(named: "Foot\($0)") != nil }) else {
+            throw ModelError.missingParts
+        }
+        return model
+    }
+
+    init?(index: Int, template: Entity) {
+        let model = template.clone(recursive: true)
+        let feet = (0..<4).compactMap { model.findEntity(named: "Foot\($0)") }
+        guard let head = model.findEntity(named: "Head"), feet.count == 4 else { return nil }
+        self.index = index
+        self.head = head
+        self.feet = feet
+        headRest = head.transform
+        footRest = feet.map(\.position)
+        root.position.x = index == 0 ? -0.09 : 0.09
+        root.addChild(model)
+        // 用整只仓鼠的包围盒响应点按，省去毛束和胡须的逐面碰撞。
+        let bounds = model.visualBounds(relativeTo: root)
+        let hitbox = ShapeResource.generateBox(size: bounds.extents)
+            .offsetBy(translation: bounds.center)
+        root.components.set(CollisionComponent(shapes: [hitbox]))
     }
 
     func greet(until: Double) { greeting = until }
@@ -337,10 +349,12 @@ private final class TableHamster {
                 root.position += movement * min(1, delta * 3)
             }
         }
-        head.position.y = responding ? 0.059 : 0.050 + sin(t * (walking ? 12 : 5)) * 0.002
-        head.orientation = simd_quatf(angle: responding ? -0.31 : sin(t * 5) * 0.09, axis: [1, 0, 0])
+        // 导出资源的根节点已按米缩放，头和脚仍在原始模型坐标中。
+        head.position.y = headRest.translation.y + (responding ? 0.050 : sin(t * 5) * 0.012)
+        head.orientation = headRest.rotation * simd_quatf(angle: responding ? -0.30 : sin(t * 5) * 0.02, axis: [1, 0, 0])
         for (offset, foot) in feet.enumerated() {
-            foot.position.y = 0.006 + (walking ? max(0, sin(t * 18 + Float(offset) * .pi)) * 0.005 : 0)
+            let step = walking ? max(0, sin(t * 18 + ([1, 2].contains(offset) ? .pi : 0))) * 0.024 : 0
+            foot.position.y = footRest[offset].y + step
         }
     }
 }

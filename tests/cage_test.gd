@@ -4,6 +4,7 @@ const Cage = preload("res://cage.tscn")
 const Habitat = preload("res://habitat.gd")
 const Care = preload("res://care.gd")
 const CarePlay = preload("res://care_play.gd")
+const PetVoice = preload("res://pet_voice.gd")
 var game: Control
 var failures := 0
 
@@ -53,7 +54,7 @@ func _run() -> void:
 	await _mouse(point, false)
 	_check(game.actors[0].state == "回应", "点击仓鼠")
 	_check_voice("huihui-greet")
-	_check(game.audio.playing and game.notice.begins_with("肥嘟嘟 · 川川，我是肥嘟嘟！") and game.notice.contains("日龄"), "点击后叫川川并显示台词和日龄")
+	_check(game.audio.playing and _is_greet_notice(0) and game.notice.contains("日龄"), "点击后随机叫川川并显示台词和日龄")
 	await create_timer(0.25).timeout
 	var before_repeat: float = game.audio.get_playback_position()
 	await _mouse(point, true)
@@ -130,7 +131,7 @@ func _run() -> void:
 	white_point = game.habitat.camera.unproject_position(game.habitat.pets[1].position + Vector3(0, 0.28, 0))
 	await _mouse(white_point, true)
 	await _mouse(white_point, false)
-	_check(game.notice.begins_with("好可爱 · 川川，你好呀，我是好可爱！") and not game.audio.playing, "静音时点好可爱仍显示台词")
+	_check(_is_greet_notice(1) and not game.audio.playing, "静音时点好可爱仍显示随机台词")
 
 	if DisplayServer.get_name() != "headless":
 		game.notice_left = 0.0
@@ -154,6 +155,12 @@ func _run() -> void:
 			DirAccess.remove_absolute(game.care.path + suffix)
 	print("笼子交互测试完成，失败项：", failures)
 	quit(0 if failures == 0 else 1)
+
+func _is_greet_notice(index: int) -> bool:
+	for line in PetVoice.GREET_LINES[index]:
+		if game.notice.begins_with("%s · %s" % [Care.NAMES[index], line[0]]):
+			return true
+	return false
 
 func _check_water_levels() -> void:
 	for remaining in [0, 2 * Care.HOUR, 12 * Care.HOUR, Care.WATER_DURATION]:
@@ -186,7 +193,11 @@ func _check_water_levels() -> void:
 
 func _check_voice(clip: String) -> void:
 	var stream: AudioStream = game.audio.stream
-	_check(stream is AudioStreamWAV and stream.resource_path.ends_with("/" + clip + ".wav"), "播放 " + clip)
+	var matches := stream is AudioStreamWAV and stream.resource_path.ends_with("/" + clip + ".wav")
+	if clip.ends_with("-greet") and stream is AudioStreamWAV:
+		var basename := stream.resource_path.get_file().trim_suffix(".wav")
+		matches = basename == clip or basename.begins_with(clip + "-")
+	_check(matches, "播放 " + clip)
 
 func _mouse(point: Vector2, pressed: bool, button: MouseButton = MOUSE_BUTTON_LEFT) -> void:
 	var motion := InputEventMouseMotion.new()
